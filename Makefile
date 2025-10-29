@@ -4,7 +4,8 @@ CXX ?= g++
 CXXFLAGS_BASE = -std=c++11 -O3 -Wall
 
 # Флаги OpenMP для разных компиляторов
-ifeq ($(CXX),xlc_r)
+# IBM XL C/C++: xlc_r, xlC_r, xlC
+ifneq (,$(findstring xl,$(CXX)))
 	OMPFLAGS = -qsmp=omp -qarch=pwr8 -mcpu=power8
 else
 	OMPFLAGS = -fopenmp
