@@ -1,7 +1,7 @@
 # Компилятор и флаги (поддержка OpenMP и Polus)
 # По умолчанию используем g++; для Polus рекомендуется xlc_r
 CXX ?= g++
-CXXFLAGS_BASE = -std=c++11 -O3 -Wall
+CXXFLAGS_BASE = -std=c++11 -O2 -Wall
 
 # Флаги OpenMP для разных компиляторов
 # IBM XL C/C++: xlc_r, xlC_r, xlC
