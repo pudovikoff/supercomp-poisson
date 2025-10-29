@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import sys
 
-def read_solution(filename='solution_40x40.txt'):
+def read_solution(filename='results/solution_40x40.txt'):
     """Читает решение из файла."""
     try:
         data = np.loadtxt(filename)
@@ -61,9 +61,9 @@ def plot_2d(x, y, u):
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('solution_2d.png', dpi=150)
-    print("2D визуализация сохранена в solution_2d.png")
-    plt.show()
+    plt.savefig('results/solution_2d.png', dpi=150)
+    print("2D визуализация сохранена в results/solution_2d.png")
+    plt.close()
 
 def plot_3d(x, y, u):
     """Строит 3D визуализацию решения."""
@@ -106,9 +106,9 @@ def plot_3d(x, y, u):
     ax2.view_init(elev=30, azim=45)
     
     plt.tight_layout()
-    plt.savefig('solution_3d.png', dpi=150)
-    print("3D визуализация сохранена в solution_3d.png")
-    plt.show()
+    plt.savefig('results/solution_3d.png', dpi=150)
+    print("3D визуализация сохранена в results/solution_3d.png")
+    plt.close()
 
 def main():
     """Основная функция."""
