@@ -1,0 +1,42 @@
+#BSUB -J "poisson_omp"
+#BSUB -o "poisson_omp_%J.out"
+#BSUB -e "poisson_omp_%J.err"
+#BSUB -W 00:20
+#BSUB -R "span[hosts=1]"
+# Пример LSF-файла для программ OpenMP на Polus
+# Основано на инструкции по постановке OpenMP-задач (affinity/launchOpenMP.py)
+# 1) Укажите N_THREADS (≤160)
+# 2) Подберите число ядер (M_CORES) по формуле: M_CORES = N_THREADS/8 + 1 (округлить вверх)
+# 3) Отправьте: bsub < OpenMP_poisson.lsf
+
+# === Настраиваемые параметры ===
+N_THREADS=16       # Число нитей OpenMP
+M_CORES=3          # Число ядер/слотов LSF (см. формулу выше)
+M=400              # Размер сетки по X
+N=600              # Размер сетки по Y
+# ===============================
+
+# Ресурсы узла (одноузловой запуск)
+# Привязка выполняется спец. скриптом; можно дополнительно задать affinity, заменив 16 на нужное число:
+#BSUB -R "affinity[core(16)]"
+# Количество слотов (ядер) для планировщика
+# (важно: эта строка должна идти после определения M_CORES)
+#BSUB -n ${M_CORES}
+
+# Параметры OpenMP
+export OMP_NUM_THREADS=${N_THREADS}
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
+
+# При необходимости раскомментируйте загрузку модулей
+# module load xlc   # IBM XL C/C++
+# module load gcc   # GNU C/C++
+
+# Проверка наличия бинарника
+if [ ! -x ./bin/poisson_omp ]; then
+  echo "Не найден ./bin/poisson_omp. Соберите проект: make CXX=xlC_r"
+  exit 2
+fi
+
+# Запуск с привязкой нитей к ядрам
+/polusfs/lsf/openmp/launchOpenMP.py ./bin/poisson_omp --M ${M} --N ${N}
