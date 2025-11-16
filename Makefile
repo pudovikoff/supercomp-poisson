@@ -64,10 +64,10 @@ $(OMP_BIN): $(OMP_SRC) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) $(OMPFLAGS) -o $@ $<
 
 $(MPI_BIN): $(MPI_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_BASE) -o $@ $(MPI_SRC)
+	$(CXX) $(CXXFLAGS_BASE) -o $@ $(MPI_SRC) -lmpi
 
 $(MPI_CLASS_BIN): $(MPI_CLASS_SRC) $(SRC_DIR)/domain_decomposition.h $(SRC_DIR)/poisson_solver_mpi.h | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_BASE) -o $@ $(MPI_CLASS_SRC)
+	$(CXX) $(CXXFLAGS_BASE) -o $@ $(MPI_CLASS_SRC) -lmpi
 
 $(TEST_DECOMP_BIN): $(TEST_DECOMP_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) -o $@ $(TEST_DECOMP_SRC)
