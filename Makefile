@@ -1,7 +1,7 @@
 # Компилятор и флаги (поддержка OpenMP и MPI)
-# По умолчанию используем g++; для Polus рекомендуется xlc_r и mpixlc++
-CXX ?= g++
-MPICXX ?= mpicxx
+# По умолчанию используем mpicxx (обёртка над g++ с MPI)
+# Можно переопределить: make CXX=g++ или make CXX=mpicxx
+CXX ?= mpicxx
 CXXFLAGS_BASE = -std=c++11 -O2 -Wall
 
 # Флаги OpenMP для разных компиляторов
@@ -64,10 +64,10 @@ $(OMP_BIN): $(OMP_SRC) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) $(OMPFLAGS) -o $@ $<
 
 $(MPI_BIN): $(MPI_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
-	$(MPICXX) $(CXXFLAGS_BASE) -o $@ $(MPI_SRC)
+	$(CXX) $(CXXFLAGS_BASE) -o $@ $(MPI_SRC)
 
 $(MPI_CLASS_BIN): $(MPI_CLASS_SRC) $(SRC_DIR)/domain_decomposition.h $(SRC_DIR)/poisson_solver_mpi.h | $(BIN_DIR)
-	$(MPICXX) $(CXXFLAGS_BASE) -o $@ $(MPI_CLASS_SRC)
+	$(CXX) $(CXXFLAGS_BASE) -o $@ $(MPI_CLASS_SRC)
 
 $(TEST_DECOMP_BIN): $(TEST_DECOMP_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) -o $@ $(TEST_DECOMP_SRC)
@@ -115,6 +115,10 @@ help:
 	@echo "  make run_mpi_class NP=4 M=40 N=40   - запустить новую MPI версию ★"
 	@echo "  make run_mpi NP=4 M=40 N=40         - запустить старую MPI версию"
 	@echo "  make run_omp M=40 N=40 THREADS=4    - запустить OpenMP версию"
+	@echo ""
+	@echo "Компилятор:"
+	@echo "  make CXX=mpicxx mpi_class  - с mpicxx (по умолчанию)"
+	@echo "  make CXX=g++ mpi_class     - с g++ (если есть MPI)"
 	@echo ""
 	@echo "Прочее:"
 	@echo "  make clean      - очистить бинарные файлы"
