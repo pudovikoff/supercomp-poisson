@@ -33,7 +33,23 @@ TEST_DECOMP_SRC = $(TESTS_DIR)/test_domain_decomposition.cpp
 TEST_DECOMP_BIN = $(BIN_DIR)/test_domain_decomposition
 
 # Цели сборки
+# По умолчанию собираем всё (может быть проблема с OpenMP на macOS)
 all: $(OMP_BIN) $(MPI_BIN) $(MPI_CLASS_BIN)
+
+# Только MPI версии (старая + новая с классом)
+mpi: $(MPI_BIN) $(MPI_CLASS_BIN)
+
+# Только новая MPI версия с классом
+mpi_class: $(MPI_CLASS_BIN)
+
+# Только старая MPI версия (без класса)
+mpi_old: $(MPI_BIN)
+
+# OpenMP версия
+omp: $(OMP_BIN)
+
+# Sequential версия
+seq: $(SEQ_BIN)
 
 $(BIN_DIR):
 	@mkdir -p $(BIN_DIR)
@@ -79,4 +95,31 @@ run_mpi_class: $(MPI_CLASS_BIN) | $(RESULTS_DIR)
 test_decomp: $(TEST_DECOMP_BIN)
 	$<
 
-.PHONY: all clean run_seq run_omp run_mpi run_mpi_class test_decomp
+.PHONY: all mpi mpi_class mpi_old omp seq clean run_seq run_omp run_mpi run_mpi_class test_decomp help
+
+# Справка
+help:
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  Makefile для Poisson Solver"
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo ""
+	@echo "Цели сборки:"
+	@echo "  make all        - собрать все версии (OpenMP + MPI)"
+	@echo "  make mpi        - собрать обе MPI версии (старая + новая)"
+	@echo "  make mpi_class  - собрать только новую MPI версию (с классом) ★"
+	@echo "  make mpi_old    - собрать старую MPI версию (без класса)"
+	@echo "  make omp        - собрать OpenMP версию"
+	@echo "  make seq        - собрать последовательную версию"
+	@echo ""
+	@echo "Запуск:"
+	@echo "  make run_mpi_class NP=4 M=40 N=40   - запустить новую MPI версию ★"
+	@echo "  make run_mpi NP=4 M=40 N=40         - запустить старую MPI версию"
+	@echo "  make run_omp M=40 N=40 THREADS=4    - запустить OpenMP версию"
+	@echo ""
+	@echo "Прочее:"
+	@echo "  make clean      - очистить бинарные файлы"
+	@echo "  make test_decomp - запустить тест разбиения"
+	@echo "  make help       - показать эту справку"
+	@echo ""
+	@echo "★ = рекомендуемые цели для новой версии с классом"
+	@echo "═══════════════════════════════════════════════════════════════"
