@@ -1,0 +1,54 @@
+#!/bin/bash
+#BSUB -n 4
+#BSUB -W 00:15
+#BSUB -J "poisson_mpi_class"
+#BSUB -o "poisson_mpi_class.%J.out"
+#BSUB -e "poisson_mpi_class.%J.err"
+
+# Скрипт для запуска MPI версии Poisson Solver на кластере Polus
+# 
+# Параметры:
+# -n 4          : количество MPI процессов (измените на нужное)
+# -W 00:15      : время выполнения (15 минут)
+# -J            : имя задачи
+# -o/-e         : файлы для stdout/stderr
+#
+# Запуск: bsub < MPI_classic.lsf
+
+# Параметры сетки
+M=40
+N=40
+
+echo "=========================================="
+echo "Poisson Solver - MPI версия (с классом)"
+echo "=========================================="
+echo "Задание: $LSB_JOBID"
+echo "Узел: $(hostname)"
+echo "Дата: $(date)"
+echo "MPI процессов: $LSB_DJOB_NUMPROC"
+echo "Сетка: ${M} x ${N}"
+echo "=========================================="
+
+# Загрузка модулей (если нужно)
+# module load compiler/xl/16.1.1
+# module load mpi/openmpi/4.0.2
+
+# Проверка наличия бинарника
+if [ ! -f "./bin/poisson_mpi_class" ]; then
+    echo "ОШИБКА: файл ./bin/poisson_mpi_class не найден!"
+    echo "Выполните: make mpi_class"
+    exit 1
+fi
+
+# Запуск программы
+echo ""
+echo "Запуск программы..."
+echo ""
+
+mpiexec ./bin/poisson_mpi_class --M $M --N $N
+
+echo ""
+echo "=========================================="
+echo "Задание завершено"
+echo "Время завершения: $(date)"
+echo "=========================================="
