@@ -35,8 +35,8 @@ export LC_ALL=C
 export LANG=C
 
 # Проверка наличия бинарника
-if [ ! -f "./bin/poisson_mpi" ]; then
-    echo "ОШИБКА: файл ./bin/poisson_mpi не найден!"
+if [ ! -f "../bin/poisson_mpi" ]; then
+    echo "ОШИБКА: файл ../bin/poisson_mpi не найден!"
     echo "Выполните: make mpi"
     exit 1
 fi
@@ -64,7 +64,7 @@ for NP in "${NP_ARRAY[@]}"; do
     echo ""
     
     # Запуск и захват вывода
-    OUTPUT=$(mpiexec -n $NP ./bin/poisson_mpi_class --M $M --N $N 2>&1)
+    OUTPUT=$(mpiexec -n $NP ../bin/poisson_mpi --M $M --N $N 2>&1)
     
     # Вывод результатов программы
     echo "$OUTPUT"
