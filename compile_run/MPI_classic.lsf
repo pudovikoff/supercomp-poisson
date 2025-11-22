@@ -1,9 +1,9 @@
 #!/bin/bash
 #BSUB -n 4
 #BSUB -W 00:15
-#BSUB -J "poisson_mpi_class"
-#BSUB -o "poisson_mpi_class.%J.out"
-#BSUB -e "poisson_mpi_class.%J.err"
+#BSUB -J "poisson_mpi"
+#BSUB -o "poisson_mpi.%J.out"
+#BSUB -e "poisson_mpi.%J.err"
 
 # Скрипт для запуска MPI версии Poisson Solver на кластере Polus
 # 
@@ -38,8 +38,8 @@ export LC_ALL=C
 export LANG=C
 
 # Проверка наличия бинарника
-if [ ! -f "../bin/poisson_mpi" ]; then
-    echo "ОШИБКА: файл ../bin/poisson_mpi не найден!"
+if [ ! -f "./bin/poisson_mpi" ]; then
+    echo "ОШИБКА: файл ./bin/poisson_mpi не найден!"
     echo "Выполните: make mpi"
     exit 1
 fi
@@ -49,7 +49,7 @@ echo ""
 echo "Запуск программы..."
 echo ""
 
-mpiexec ../bin/poisson_mpi --M $M --N $N
+mpiexec ./bin/poisson_mpi --M $M --N $N
 
 echo ""
 echo "=========================================="
