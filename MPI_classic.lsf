@@ -12,8 +12,6 @@
 # -W 00:15      : время выполнения (15 минут)
 # -J            : имя задачи
 # -o/-e         : файлы для stdout/stderr
-#
-# Запуск: bsub < MPI_classic.lsf
 
 # Параметры сетки
 M=40
@@ -29,9 +27,8 @@ echo "MPI процессов: $LSB_DJOB_NUMPROC"
 echo "Сетка: ${M} x ${N}"
 echo "=========================================="
 
-# Загрузка модулей (если нужно)
-# module load compiler/xl/16.1.1
-# module load mpi/openmpi/4.0.2
+# Загрузка модулей
+module load SpectrumMPI
 
 # Исправление perl warnings о локали
 export LC_ALL=C
