@@ -1,0 +1,11 @@
+#BSUB -J "OpenMP_job"
+#BSUB -o "OpenMP_job%J.out"
+#BSUB -e "OpenMP_job%J.err"
+#BSUB -R "affinity[core(8)]"
+OMP_NUM_THREADS=1
+
+M=800              # X shape
+N=1200             # Y shape
+
+
+/polusfs/lsf/openmp/launchOpenMP.py ./bin/poisson_omp --M ${M} --N ${N}
