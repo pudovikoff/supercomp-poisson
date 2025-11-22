@@ -20,7 +20,7 @@
 // условиям. Он используется как в MPI-коде, так и в тестах.
 
 // Выбор разбиения числа процессов P на Px × Py так, чтобы домены были
-// как можно более "квадратными" (ближе к одинаковому числу узлов по x и y).
+// как можно более "квадратными" (отношение сторон каждого домена в [0.5, 2]).
 inline void choose_process_grid(int M, int N, int P, int &Px, int &Py) {
     // По умолчанию все процессы в одном столбце
     Px = 1;
@@ -31,16 +31,38 @@ inline void choose_process_grid(int M, int N, int P, int &Px, int &Py) {
     const int Ny_total = std::max(1, N - 1);
 
     double best_cost = 1e100;
+    bool found_valid = false;
 
     for (int px = 1; px <= P; ++px) {
         if (P % px != 0) continue;
         int py = P / px;
 
+        // Вычислить минимальное и максимальное количество узлов в каждом домене
+        const int base_nx = Nx_total / px;
+        const int rem_x  = Nx_total % px;
+        const int min_nx = base_nx;
+        const int max_nx = base_nx + (rem_x > 0 ? 1 : 0);
+
+        const int base_ny = Ny_total / py;
+        const int rem_y  = Ny_total % py;
+        const int min_ny = base_ny;
+        const int max_ny = base_ny + (rem_y > 0 ? 1 : 0);
+
+        // Проверить: все ли домены удовлетворяют constraint [0.5, 2]
+        // Худший случай: максимальный nx / минимальный ny и наоборот
+        double max_ratio = (double)max_nx / min_ny;
+        double min_ratio = (double)min_nx / max_ny;
+
+        if (min_ratio < 0.5 - 1e-10 || max_ratio > 2.0 + 1e-10) {
+            continue;  // Этот вариант не подходит
+        }
+
+        found_valid = true;
+
         // Оценка формы домена: отношение усреднённых размеров по осям
-        double nx = static_cast<double>(Nx_total) / px;
-        double ny = static_cast<double>(Ny_total) / py;
-        if (ny == 0.0) continue;
-        double ratio = nx / ny;
+        double nx_avg = (double)Nx_total / px;
+        double ny_avg = (double)Ny_total / py;
+        double ratio = nx_avg / ny_avg;
         if (ratio <= 0.0) continue;
 
         double cost = std::max(ratio, 1.0 / ratio); // ближе к 1 — лучше
@@ -48,6 +70,28 @@ inline void choose_process_grid(int M, int N, int P, int &Px, int &Py) {
             best_cost = cost;
             Px = px;
             Py = py;
+        }
+    }
+
+    // Если не найден вариант, удовлетворяющий constraint, оставить значение по умолчанию
+    // или выбрать лучший из доступных вариантов
+    if (!found_valid) {
+        // Fallback: выбрать самый сбалансированный вариант без учёта constraint
+        best_cost = 1e100;
+        for (int px = 1; px <= P; ++px) {
+            if (P % px != 0) continue;
+            int py = P / px;
+            double nx = (double)Nx_total / px;
+            double ny = (double)Ny_total / py;
+            if (ny == 0.0) continue;
+            double ratio = nx / ny;
+            if (ratio <= 0.0) continue;
+            double cost = std::max(ratio, 1.0 / ratio);
+            if (cost < best_cost) {
+                best_cost = cost;
+                Px = px;
+                Py = py;
+            }
         }
     }
 }

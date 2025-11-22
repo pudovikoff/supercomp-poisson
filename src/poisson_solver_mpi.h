@@ -1,11 +1,5 @@
 #pragma once
-
-#ifdef MPI_COMM_WORLD
-    // MPI уже определен извне (например, через заглушку)
-#else
-    #include <mpi.h>
-#endif
-
+#include <mpi.h>
 #include <cmath>
 #include <vector>
 #include <iostream>
