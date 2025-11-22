@@ -35,9 +35,9 @@ export LC_ALL=C
 export LANG=C
 
 # Проверка наличия бинарника
-if [ ! -f "./bin/poisson_mpi_class" ]; then
-    echo "ОШИБКА: файл ./bin/poisson_mpi_class не найден!"
-    echo "Выполните: make mpi_class"
+if [ ! -f "./bin/poisson_mpi" ]; then
+    echo "ОШИБКА: файл ./bin/poisson_mpi не найден!"
+    echo "Выполните: make mpi"
     exit 1
 fi
 
