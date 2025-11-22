@@ -6,7 +6,7 @@ MPICXX ?= mpicxx
 CXXFLAGS_BASE = -std=c++11 -O2 -Wall
 
 # Модуль загрузки MPI (для HPC кластера)
-MODULE_LOAD_MPI ?= module load SpectrumMPI 2>/dev/null ||
+MODULE_LOAD_MPI ?= module load SpectrumMPI 2>/dev/null ;
 
 # Флаги OpenMP для разных компиляторов
 # IBM XL C/C++: xlc_r, xlC_r, xlC
