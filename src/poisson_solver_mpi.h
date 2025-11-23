@@ -8,6 +8,53 @@
 
 using namespace std;
 
+bool is_in_domain(double x, double y) const {
+    if (x <= -1.0 || x >= 1.0 || y <= -1.0 || y >= 1.0) return false;
+    if (x >= 0.0 && y >= 0.0) return false; // вырезанный квадрант
+    return true;
+}
+    
+double segment_length_in_D(double x1, double y1, double x2, double y2) const {
+    bool p1_in = is_in_domain(x1, y1);
+    bool p2_in = is_in_domain(x2, y2);
+    if (p1_in && p2_in) return hypot(x2 - x1, y2 - y1);
+    if (!p1_in && !p2_in) return 0.0;
+    double len = hypot(x2 - x1, y2 - y1);
+    if (fabs(x1 - x2) < 1e-12) {
+        if (x1 < 0.0) return len;
+        if (x1 > 0.0) {
+            double y_min = min(y1, y2), y_max = max(y1, y2);
+            if (y_max <= 0.0) return len;
+            if (y_min >= 0.0) return 0.0;
+            return fabs(y_min);
+        }
+        double y_min = min(y1, y2);
+        return y_min < 0.0 ? fabs(y_min) : 0.0;
+    }
+    if (fabs(y1 - y2) < 1e-12) {
+        if (y1 < 0.0) return len;
+        if (y1 > 0.0) {
+            double x_min = min(x1, x2), x_max = max(x1, x2);
+            if (x_max <= 0.0) return len;
+            if (x_min >= 0.0) return 0.0;
+            return fabs(x_min);
+        }
+        double x_min = min(x1, x2);
+        return x_min < 0.0 ? fabs(x_min) : 0.0;
+    }
+    return 0.5 * len; // общее приближение
+}
+    
+double cell_area_in_D(double x_left, double x_right, double y_bottom, double y_top) const {
+    double full_area = (x_right - x_left) * (y_top - y_bottom);
+    if (x_right <= 0.0 || y_top <= 0.0) return full_area;
+    if (x_left >= 0.0 && y_bottom >= 0.0) return 0.0;
+    double x_int = max(0.0, x_left);
+    double y_int = max(0.0, y_bottom);
+    double removed = max(0.0, x_right - x_int) * max(0.0, y_top - y_int);
+    return full_area - removed;
+}
+
 // Обёртка над 2D массивом с призрачными слоями [0..nx+1][0..ny+1]
 struct Grid2D {
     int nx, ny; // внутренние узлы
@@ -28,7 +75,7 @@ struct Grid2D {
     
     inline const double& at(int i, int j) const { 
         return data[(i)*(ny+2) + j]; 
-    } // i∈[0..nx+1], j∈[0..ny+1]
+    } // i \in [0..nx+1], j \in [0..ny+1]
 };
 
 class PoissonSolverMPI {
@@ -113,53 +160,6 @@ public:
     }
     
 private:
-    inline bool is_in_domain(double x, double y) const {
-        if (x <= -1.0 || x >= 1.0 || y <= -1.0 || y >= 1.0) return false;
-        if (x >= 0.0 && y >= 0.0) return false; // вырезанный квадрант
-        return true;
-    }
-    
-    inline double segment_length_in_D(double x1, double y1, double x2, double y2) const {
-        bool p1_in = is_in_domain(x1, y1);
-        bool p2_in = is_in_domain(x2, y2);
-        if (p1_in && p2_in) return hypot(x2 - x1, y2 - y1);
-        if (!p1_in && !p2_in) return 0.0;
-        double len = hypot(x2 - x1, y2 - y1);
-        if (fabs(x1 - x2) < 1e-12) {
-            if (x1 < 0.0) return len;
-            if (x1 > 0.0) {
-                double y_min = min(y1, y2), y_max = max(y1, y2);
-                if (y_max <= 0.0) return len;
-                if (y_min >= 0.0) return 0.0;
-                return fabs(y_min);
-            }
-            double y_min = min(y1, y2);
-            return y_min < 0.0 ? fabs(y_min) : 0.0;
-        }
-        if (fabs(y1 - y2) < 1e-12) {
-            if (y1 < 0.0) return len;
-            if (y1 > 0.0) {
-                double x_min = min(x1, x2), x_max = max(x1, x2);
-                if (x_max <= 0.0) return len;
-                if (x_min >= 0.0) return 0.0;
-                return fabs(x_min);
-            }
-            double x_min = min(x1, x2);
-            return x_min < 0.0 ? fabs(x_min) : 0.0;
-        }
-        return 0.5 * len; // общее приближение
-    }
-    
-    inline double cell_area_in_D(double x_left, double x_right, double y_bottom, double y_top) const {
-        double full_area = (x_right - x_left) * (y_top - y_bottom);
-        if (x_right <= 0.0 || y_top <= 0.0) return full_area;
-        if (x_left >= 0.0 && y_bottom >= 0.0) return 0.0;
-        double x_int = max(0.0, x_left);
-        double y_int = max(0.0, y_bottom);
-        double removed = max(0.0, x_right - x_int) * max(0.0, y_top - y_int);
-        return full_area - removed;
-    }
-    
     void compute_coefficients() {
         // Заполнение a_face_x
         for (int il = 0; il <= nx; ++il) {
@@ -209,7 +209,7 @@ private:
     }
     
 public:
-    void exchange_halo(Grid2D& U) {
+    void exchange(Grid2D& U) {
         MPI_Status st;
         
         // Вдоль Y (нижняя/верхняя границы) — целые строки длиной nx
@@ -344,8 +344,8 @@ public:
         double H_prev = 0.0;
         
         for (int k = 0; k < max_iter; ++k) {
-            // Ap = A*p (нужны гало для p)
-            exchange_halo(p);
+            // Ap = A*p (нужны актуальные значения для p)
+            exchange(p);
             apply_A(p, Ap);
             
             double denom_local = dot_product_local(Ap, p), denom = 0.0;
