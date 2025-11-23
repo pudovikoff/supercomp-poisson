@@ -34,8 +34,8 @@ $$
 
 ### 1.2 Геометрия области
 
-![Область-сапожок](../results/plot_d.png){:width="300px"}
-
+<!-- ![Область-сапожок](../results/plot_d.png){:width="300px"} -->
+<img src="../results/plot_d.png" alt="Область-сапожок" width="50%" style="display: block; margin: 0 auto;" />
 
 ---
 
