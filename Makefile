@@ -26,10 +26,12 @@ TESTS_DIR = tests
 SEQ_SRC = $(SRC_DIR)/poisson_sequential.cpp
 OMP_SRC = $(SRC_DIR)/poisson_omp.cpp
 MPI_SRC = $(SRC_DIR)/poisson_mpi.cpp
+MPI_OMP_SRC = $(SRC_DIR)/poisson_mpi_omp.cpp
 
 SEQ_BIN = $(BIN_DIR)/poisson_sequential
 OMP_BIN = $(BIN_DIR)/poisson_omp
 MPI_BIN = $(BIN_DIR)/poisson_mpi
+MPI_OMP_BIN = $(BIN_DIR)/poisson_mpi_omp
 
 # Тесты
 TEST_DECOMP_SRC = $(TESTS_DIR)/test_domain_decomposition.cpp
@@ -37,7 +39,7 @@ TEST_DECOMP_BIN = $(BIN_DIR)/test_domain_decomposition
 
 # Цели сборки
 # По умолчанию собираем всё (может быть проблема с OpenMP на macOS)
-all: $(OMP_BIN) $(MPI_BIN)
+all: $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN)
 
 # Только MPI версия
 mpi: $(MPI_BIN)
@@ -47,6 +49,9 @@ omp: $(OMP_BIN)
 
 # Sequential версия
 seq: $(SEQ_BIN)
+
+# Гибридная MPI+OpenMP версия
+mpi_omp: $(MPI_OMP_BIN)
 
 $(BIN_DIR):
 	@mkdir -p $(BIN_DIR)
@@ -63,11 +68,14 @@ $(OMP_BIN): $(OMP_SRC) | $(BIN_DIR)
 $(MPI_BIN): $(MPI_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(MODULE_LOAD_MPI) $(MPICXX) $(CXXFLAGS_BASE) -o $@ $(MPI_SRC)
 
+$(MPI_OMP_BIN): $(MPI_OMP_SRC) $(SRC_DIR)/poisson_solver_mpi_omp.h $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
+	$(MODULE_LOAD_MPI) $(MPICXX) $(CXXFLAGS_BASE) $(OMPFLAGS) -o $@ $(MPI_OMP_SRC)
+
 $(TEST_DECOMP_BIN): $(TEST_DECOMP_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) -o $@ $(TEST_DECOMP_SRC)
 
 clean:
-	rm -f $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(TEST_DECOMP_BIN)
+	rm -f $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN) $(TEST_DECOMP_BIN)
 	rm -f $(RESULTS_DIR)/solution_*.txt
 
 run_seq: $(SEQ_BIN) | $(RESULTS_DIR)
@@ -81,11 +89,15 @@ run_omp: $(OMP_BIN) | $(RESULTS_DIR)
 run_mpi: $(MPI_BIN) | $(RESULTS_DIR)
 	$(MODULE_LOAD_MPI) mpirun -np $(NP) $< --M $(M) --N $(N)
 
+# Пример: make run_mpi_omp NP=2 M=40 N=40 THREADS=4
+run_mpi_omp: $(MPI_OMP_BIN) | $(RESULTS_DIR)
+	$(MODULE_LOAD_MPI) mpirun -np $(NP) $< --M $(M) --N $(N) --threads $(THREADS)
+
 # Локальный тест разбиения
 test_decomp: $(TEST_DECOMP_BIN)
 	$<
 
-.PHONY: all mpi omp seq clean run_seq run_omp run_mpi test_decomp help
+.PHONY: all mpi omp seq mpi_omp clean run_seq run_omp run_mpi run_mpi_omp test_decomp help
 
 # Справка
 help:
@@ -94,14 +106,16 @@ help:
 	@echo "═══════════════════════════════════════════════════════════════"
 	@echo ""
 	@echo "Цели сборки:"
-	@echo "  make all        - собрать все версии (OpenMP + MPI)"
+	@echo "  make all        - собрать все версии (OpenMP + MPI + MPI+OpenMP)"
 	@echo "  make mpi        - собрать MPI версию"
 	@echo "  make omp        - собрать OpenMP версию"
 	@echo "  make seq        - собрать последовательную версию"
+	@echo "  make mpi_omp    - собрать гибридную MPI+OpenMP версию"
 	@echo ""
 	@echo "Запуск:"
-	@echo "  make run_mpi NP=4 M=40 N=40         - запустить MPI версию"
-	@echo "  make run_omp M=40 N=40 THREADS=4    - запустить OpenMP версию"
+	@echo "  make run_mpi NP=4 M=40 N=40                - запустить MPI версию"
+	@echo "  make run_omp M=40 N=40 THREADS=4           - запустить OpenMP версию"
+	@echo "  make run_mpi_omp NP=2 M=40 N=40 THREADS=4  - запустить MPI+OpenMP версию"
 	@echo ""
 	@echo "Примечание:"
 	@echo "  - MPI версии используют mpicxx (автоматическая линковка библиотек)"
