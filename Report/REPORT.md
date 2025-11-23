@@ -1,9 +1,9 @@
-# Отчет по решению задачи Пуассона методом фиктивных областей
+# Отчет по решению задачи Дирихле для уравнения Пуассона
 
 ## Вариант 7: Область-сапожок
 
 **Автор:** Пудовиков А.Д.  
-**Курс:** Суперкомпьютерное моделирование и технологии
+**Группа:** 616мс
 
 ---
 
@@ -13,10 +13,10 @@
 
 Требуется решить двумерную задачу Дирихле для уравнения Пуассона:
 
-```
--Δu = f(x, y),  (x, y) ∈ D
-u(x, y) = 0,    (x, y) ∈ γ
-```
+$$
+- \Delta u = f(x, y), \quad (x, y) \in D
+u(x, y) = 0, \quad   (x, y) \in \gamma
+$$
 
 где:
 - **Оператор Лапласа:**  
@@ -35,7 +35,7 @@ u(x, y) = 0,    (x, y) ∈ γ
 
 ### 1.2 Геометрия области
 
-![Область-сапожок](../results/plot_d.png)
+![Область-сапожок](../results/plot_d.png){width=50%}
 
 
 ---
@@ -144,27 +144,20 @@ $$(Dw)_{i,j} = \left[\frac{a_{i+1,j} + a_{i,j}}{h_1^2} + \frac{b_{i,j+1} + b_{i,
 
 ---
 
-## 3. Структура программы
+## 3. Структура кодовой базы
 
-```cpp
-// 1. Геометрические функции
-bool is_in_domain(double x, double y)
-double segment_length_in_D(...)
-double cell_area_in_D(...)
-
-// 2. Класс PoissonSolver
-class PoissonSolver {
-    void compute_coefficients()   // Вычисление a, b, F
-    void apply_A(...)              // Оператор A
-    void apply_D_inv(...)          // Предобуславливатель D^{-1}
-    void solve_CG(...)             // Метод сопряженных градиентов
-    double dot_product(...)        // Скалярное произведение
-    double euclidean_norm(...)     // Евклидова норма
-    double max_norm(...)           // Максимум норма
-    void save_solution(...)        // Сохранение результата
-}
 ```
-
+src/
+├── poisson_sequential.cpp       # Последовательная версия
+├── poisson_omp.cpp              # OpenMP версия
+├── poisson_mpi.cpp              # MPI версия
+├── poisson_mpi_omp.cpp          # Гибридная MPI+OpenMP версия
+├── poisson_solver_mpi.h         # MPI solver c основной логикой, в т.ч. Grid
+├── poisson_solver_mpi_omp.h     # MPI + OpenMP solver c основной логикой
+├── domain_decomposition.h       # Функции декомпозиции домена для выбора сетки 
+├── plot_solution.py             # Визуализация решения
+└── plot_speedup.py              # Визуализация производительности
+```
 
 ---
 
