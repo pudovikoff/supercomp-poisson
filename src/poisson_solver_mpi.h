@@ -8,13 +8,13 @@
 
 using namespace std;
 
-bool is_in_domain(double x, double y) const {
+bool is_in_domain(double x, double y) {
     if (x <= -1.0 || x >= 1.0 || y <= -1.0 || y >= 1.0) return false;
     if (x >= 0.0 && y >= 0.0) return false; // вырезанный квадрант
     return true;
 }
     
-double segment_length_in_D(double x1, double y1, double x2, double y2) const {
+double segment_length_in_D(double x1, double y1, double x2, double y2) {
     bool p1_in = is_in_domain(x1, y1);
     bool p2_in = is_in_domain(x2, y2);
     if (p1_in && p2_in) return hypot(x2 - x1, y2 - y1);
@@ -45,7 +45,7 @@ double segment_length_in_D(double x1, double y1, double x2, double y2) const {
     return 0.5 * len; // общее приближение
 }
     
-double cell_area_in_D(double x_left, double x_right, double y_bottom, double y_top) const {
+double cell_area_in_D(double x_left, double x_right, double y_bottom, double y_top) {
     double full_area = (x_right - x_left) * (y_top - y_bottom);
     if (x_right <= 0.0 || y_top <= 0.0) return full_area;
     if (x_left >= 0.0 && y_bottom >= 0.0) return 0.0;
