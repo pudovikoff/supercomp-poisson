@@ -1,6 +1,6 @@
 #!/bin/bash
-#BSUB -n 32
-#BSUB -W 02:00
+#BSUB -n 16
+#BSUB -W 00:30
 #BSUB -J "poisson_mpi_omp_table3"
 #BSUB -o "poisson_mpi_omp_table3.%J.out"
 #BSUB -e "poisson_mpi_omp_table3.%J.err"
