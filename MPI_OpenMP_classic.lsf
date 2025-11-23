@@ -1,0 +1,168 @@
+#!/bin/bash
+#BSUB -n 8
+#BSUB -W 00:30
+#BSUB -J "poisson_mpi_omp_test"
+#BSUB -o "poisson_mpi_omp_test.%J.out"
+#BSUB -e "poisson_mpi_omp_test.%J.err"
+#BSUB -R "affinity[core(4)]"
+
+
+# Скрипт для тестирования гибридной MPI+OpenMP версии
+# 
+# Запускает программу в следующих конфигурациях:
+# - Последовательный код (для reference)
+# - 1 процесс × 4 нити
+# - 2 процесса × 4 нити
+
+# Параметры сетки (фиксированные)
+M=40
+N=40
+
+echo "=========================================="
+echo "Poisson Solver - Гибридный MPI+OpenMP"
+echo "=========================================="
+echo "Задание: $LSB_JOBID"
+echo "Узел: $(hostname)"
+echo "Дата: $(date)"
+echo "Сетка: ${M} x ${N}"
+echo "=========================================="
+
+# Загрузка модулей
+module load SpectrumMPI
+
+# Исправление perl warnings о локали
+export LC_ALL=C
+export LANG=C
+
+# Проверка наличия бинарников
+if [ ! -f "./bin/poisson_sequential" ]; then
+    echo "ПРЕДУПРЕЖДЕНИЕ: файл ./bin/poisson_sequential не найден!"
+    echo "Выполните: make sequential"
+fi
+
+if [ ! -f "./bin/poisson_mpi_omp" ]; then
+    echo "ОШИБКА: файл ./bin/poisson_mpi_omp не найден!"
+    echo "Выполните: make mpi_omp"
+    exit 1
+fi
+
+echo ""
+echo "Начало тестов..."
+echo ""
+
+# Заголовок таблицы результатов
+echo "=========================================="
+echo "Результаты тестов:"
+echo "=========================================="
+printf "%-20s %-12s %-12s %-12s %-15s %-15s\n" "Конфигурация" "Итерации" "Время (с)" "Ускорение" "||w||_E" "||w||_C"
+echo "-----------------------------------------------------------------------------------------------"
+
+# Сохраним время для последовательной версии для расчета ускорения
+BASE_TIME=""
+BASE_ITERS=""
+BASE_NORM_E=""
+BASE_NORM_C=""
+
+# Тест 1: Последовательный код (если доступен)
+if [ -f "./bin/poisson_sequential" ]; then
+    echo ""
+    echo ">>> Тест 1: Последовательный код"
+    echo ""
+    
+    OUTPUT=$(./bin/poisson_sequential 2>&1)
+    echo "$OUTPUT"
+    
+    ITERS=$(echo "$OUTPUT" | grep "Итераций:" | awk '{print $2}')
+    TIME=$(echo "$OUTPUT" | grep "Время решения:" | awk '{print $3}')
+    NORM_E=$(echo "$OUTPUT" | grep "Норма ||w||_E:" | awk '{print $3}')
+    NORM_C=$(echo "$OUTPUT" | grep "Норма ||w||_C:" | awk '{print $3}')
+    
+    if [ -z "$TIME" ]; then
+        echo "ВНИМАНИЕ: не удалось извлечь время выполнения"
+    else
+        BASE_TIME=$TIME
+        BASE_ITERS=$ITERS
+        BASE_NORM_E=$NORM_E
+        BASE_NORM_C=$NORM_C
+        printf "%-20s %-12s %-12s %-12s %-15s %-15s\n" "Sequential" "$ITERS" "$TIME" "1.00" "$NORM_E" "$NORM_C"
+    fi
+    echo ""
+    echo "---"
+fi
+
+# Тест 2: 1 процесс × 4 нити
+echo ""
+echo ">>> Тест 2: 1 MPI процесс × 4 OpenMP нити"
+echo ""
+
+OUTPUT=$(mpiexec -n 1 ./bin/poisson_mpi_omp --M $M --N $N --threads 4 2>&1)
+echo "$OUTPUT"
+
+ITERS=$(echo "$OUTPUT" | grep "Iterations:" | awk '{print $2}')
+TIME=$(echo "$OUTPUT" | grep "Time:" | awk '{print $2}')
+NORM_E=$(echo "$OUTPUT" | grep "||w||_E" | awk -F'= ' '{print $2}' | awk -F',' '{print $1}')
+NORM_C=$(echo "$OUTPUT" | grep "||w||_C" | awk -F'= ' '{print $2}')
+
+if [ -z "$TIME" ]; then
+    echo "ВНИМАНИЕ: не удалось извлечь время выполнения"
+else
+    if [ -z "$BASE_TIME" ]; then
+        BASE_TIME=$TIME
+        BASE_ITERS=$ITERS
+        BASE_NORM_E=$NORM_E
+        BASE_NORM_C=$NORM_C
+        SPEEDUP="1.00"
+    else
+        SPEEDUP=$(echo "scale=2; $BASE_TIME / $TIME" | bc)
+    fi
+    printf "%-20s %-12s %-12s %-12s %-15s %-15s\n" "1 proc × 4 threads" "$ITERS" "$TIME" "$SPEEDUP" "$NORM_E" "$NORM_C"
+fi
+
+echo ""
+echo "---"
+
+# Тест 3: 2 процесса × 4 нити
+echo ""
+echo ">>> Тест 3: 2 MPI процесса × 4 OpenMP нити"
+echo ""
+
+OUTPUT=$(mpiexec -n 2 ./bin/poisson_mpi_omp --M $M --N $N --threads 4 2>&1)
+echo "$OUTPUT"
+
+ITERS=$(echo "$OUTPUT" | grep "Iterations:" | awk '{print $2}')
+TIME=$(echo "$OUTPUT" | grep "Time:" | awk '{print $2}')
+NORM_E=$(echo "$OUTPUT" | grep "||w||_E" | awk -F'= ' '{print $2}' | awk -F',' '{print $1}')
+NORM_C=$(echo "$OUTPUT" | grep "||w||_C" | awk -F'= ' '{print $2}')
+
+if [ -z "$TIME" ]; then
+    echo "ВНИМАНИЕ: не удалось извлечь время выполнения"
+else
+    if [ -n "$BASE_TIME" ]; then
+        SPEEDUP=$(echo "scale=2; $BASE_TIME / $TIME" | bc)
+    else
+        SPEEDUP="N/A"
+    fi
+    printf "%-20s %-12s %-12s %-12s %-15s %-15s\n" "2 proc × 4 threads" "$ITERS" "$TIME" "$SPEEDUP" "$NORM_E" "$NORM_C"
+fi
+
+echo ""
+echo "---"
+
+echo ""
+echo "=========================================="
+echo "Тесты завершены"
+echo "Время завершения: $(date)"
+echo "=========================================="
+
+echo ""
+echo "Сравнение норм решения:"
+echo "  Базовые значения (reference):"
+echo "    Итерации: $BASE_ITERS"
+echo "    ||w||_E: $BASE_NORM_E"
+echo "    ||w||_C: $BASE_NORM_C"
+echo ""
+echo "  Все конфигурации должны давать одинаковые:"
+echo "    - Количество итераций"
+echo "    - Нормы решения (с точностью до ошибок округления)"
+echo ""
+echo "Результаты также сохранены в: poisson_mpi_omp_test.$LSB_JOBID.out"
