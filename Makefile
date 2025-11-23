@@ -39,7 +39,7 @@ TEST_DECOMP_BIN = $(BIN_DIR)/test_domain_decomposition
 
 # Цели сборки
 # По умолчанию собираем всё (может быть проблема с OpenMP на macOS)
-all: $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN)
+all: $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN)
 
 # Только MPI версия
 mpi: $(MPI_BIN)

@@ -193,7 +193,7 @@ private:
         }
         
         // Правая часть F и диагональ D_diag
-        #pragma omp parallel for collapse(2) schedule(static)
+        #pragma omp parallel for schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il) {
             for (int jl = 1; jl <= ny; ++jl) {
                 int ig = ix0 + il - 1;
@@ -267,7 +267,7 @@ public:
     }
     
     void apply_A(const Grid2D& U, Grid2D& RES) {
-        #pragma omp parallel for collapse(2) schedule(static)
+        #pragma omp parallel for schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il) {
             for (int jl = 1; jl <= ny; ++jl) {
                 double aL = afx(il - 1, jl - 1), aR = afx(il, jl - 1);
@@ -282,7 +282,7 @@ public:
     }
     
     void apply_D_inv(const Grid2D& R, Grid2D& Z) {
-        #pragma omp parallel for collapse(2) schedule(static)
+        #pragma omp parallel for schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il)
             for (int jl = 1; jl <= ny; ++jl)
                 Z.at(il, jl) = R.at(il, jl) / dij(il, jl);
@@ -290,7 +290,7 @@ public:
     
     double dot_product_local(const Grid2D& U, const Grid2D& V) {
         double s = 0.0;
-        #pragma omp parallel for reduction(+:s) collapse(2) schedule(static)
+        #pragma omp parallel for reduction(+:s) schedule(static) collapse(2) 
         for (int il = 1; il <= nx; ++il)
             for (int jl = 1; jl <= ny; ++jl)
                 s += U.at(il, jl) * V.at(il, jl);
@@ -306,7 +306,7 @@ public:
     
     double max_norm_local(const Grid2D& U) {
         double m = 0.0;
-        #pragma omp parallel for reduction(max:m) collapse(2) schedule(static)
+        #pragma omp parallel for reduction(max:m) schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il)
             for (int jl = 1; jl <= ny; ++jl)
                 m = std::max(m, fabs(U.at(il, jl)));
@@ -334,7 +334,7 @@ public:
         Grid2D r(nx, ny), z(nx, ny), p(nx, ny), Ap(nx, ny);
         
         // Инициализация
-        #pragma omp parallel for collapse(2) schedule(static)
+        #pragma omp parallel for schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il) {
             for (int jl = 1; jl <= ny; ++jl) {
                 w.at(il, jl) = 0.0;
@@ -344,7 +344,7 @@ public:
         
         apply_D_inv(r, z); // z(0)
         
-        #pragma omp parallel for collapse(2) schedule(static)
+        #pragma omp parallel for schedule(static) collapse(2) 
         for (int il = 1; il <= nx; ++il)
             for (int jl = 1; jl <= ny; ++jl)
                 p.at(il, jl) = z.at(il, jl); // p(1)
@@ -365,7 +365,7 @@ public:
             
             // w = w + alpha * p; также считаем норму шага
             double diff_sq_local = 0.0;
-            #pragma omp parallel for reduction(+:diff_sq_local) collapse(2) schedule(static)
+            #pragma omp parallel for reduction(+:diff_sq_local) schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il) {
                 for (int jl = 1; jl <= ny; ++jl) {
                     double inc = alpha * p.at(il, jl);
@@ -383,7 +383,7 @@ public:
             }
             
             // r = r - alpha * Ap
-            #pragma omp parallel for collapse(2) schedule(static)
+            #pragma omp parallel for schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il)
                 for (int jl = 1; jl <= ny; ++jl)
                     r.at(il, jl) -= alpha * Ap.at(il, jl);
@@ -396,7 +396,7 @@ public:
             
             // Контроль монотонности H(w)
             double H_curr_local = 0.0;
-            #pragma omp parallel for reduction(+:H_curr_local) collapse(2) schedule(static)
+            #pragma omp parallel for reduction(+:H_curr_local) schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il)
                 for (int jl = 1; jl <= ny; ++jl)
                     H_curr_local += (fij(il, jl) + r.at(il, jl)) * w.at(il, jl);
@@ -407,7 +407,7 @@ public:
             if (k == 0) H_prev = H_curr;
             if (H_curr < H_prev) {
                 // Перезапуск
-                #pragma omp parallel for collapse(2) schedule(static)
+                #pragma omp parallel for schedule(static) collapse(2)
                 for (int il = 1; il <= nx; ++il) {
                     for (int jl = 1; jl <= ny; ++jl) {
                         r.at(il, jl) = fij(il, jl);
@@ -415,7 +415,7 @@ public:
                     }
                 }
                 apply_D_inv(r, z);
-                #pragma omp parallel for collapse(2) schedule(static)
+                #pragma omp parallel for schedule(static) collapse(2)
                 for (int il = 1; il <= nx; ++il)
                     for (int jl = 1; jl <= ny; ++jl)
                         p.at(il, jl) = z.at(il, jl);
@@ -426,7 +426,7 @@ public:
             H_prev = H_curr;
             
             double beta = rz_new / rz_global;
-            #pragma omp parallel for collapse(2) schedule(static)
+            #pragma omp parallel for schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il)
                 for (int jl = 1; jl <= ny; ++jl)
                     p.at(il, jl) = z.at(il, jl) + beta * p.at(il, jl);
