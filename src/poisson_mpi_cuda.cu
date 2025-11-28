@@ -152,6 +152,12 @@ void launch_copy_interior_from_device(double* ghost_dev, const double* flat_dev,
 
 // ========== Реализация класса PoissonSolverMPICUDA ==========
 
+// Определения статических членов
+const double PoissonSolverMPICUDA::A1 = -1.0;
+const double PoissonSolverMPICUDA::B1 = 1.0;
+const double PoissonSolverMPICUDA::A2 = -1.0;
+const double PoissonSolverMPICUDA::B2 = 1.0;
+
 PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     : M(M_), N(N_), cart_comm(comm_) {
     

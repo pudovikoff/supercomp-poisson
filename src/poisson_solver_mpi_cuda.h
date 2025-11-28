@@ -137,8 +137,8 @@ public:
         return Ddiag[(il-1)*ny + (jl-1)];
     }
     
-    static constexpr double A1 = -1.0, B1 = 1.0;
-    static constexpr double A2 = -1.0, B2 = 1.0;
+    // Геометрия области (вариант 7 — «сапожок»)
+    static const double A1, B1, A2, B2;
     
     PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_);
     ~PoissonSolverMPICUDA();
