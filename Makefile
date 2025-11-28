@@ -8,7 +8,7 @@ CXXFLAGS_BASE = -std=c++11 -O2 -Wall
 # CUDA компилятор и параметры (для MPI+CUDA версии)
 NVCC ?= nvcc
 ARCH ?= sm_35
-HOST_COMP ?= mpicc
+HOST_COMP ?= mpicxx
 NVCCFLAGS = -arch=$(ARCH) -ccbin=$(HOST_COMP) -std=c++11 -O3 -Xcompiler -fPIC
 NVCCLINKFLAGS = -lstdc++ -lm
 
@@ -130,7 +130,7 @@ help:
 	@echo "  make omp        - собрать OpenMP версию"
 	@echo "  make seq        - собрать последовательную версию"
 	@echo "  make mpi_omp    - собрать гибридную MPI+OpenMP версию"
-	@echo "  make mpi_cuda   - собрать MPI+CUDA версию (ARCH=sm_35 HOST_COMP=mpicc)"
+	@echo "  make mpi_cuda   - собрать MPI+CUDA версию (ARCH=sm_35 HOST_COMP=mpicxx)"
 	@echo ""
 	@echo "Запуск:"
 	@echo "  make run_mpi NP=4 M=40 N=40                - запустить MPI версию"
