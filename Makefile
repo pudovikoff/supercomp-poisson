@@ -10,6 +10,7 @@ NVCC ?= nvcc
 ARCH ?= sm_35
 HOST_COMP ?= mpicc
 NVCCFLAGS = -arch=$(ARCH) -ccbin=$(HOST_COMP) -std=c++11 -O3 -Xcompiler -fPIC
+NVCCLINKFLAGS = -lstdc++ -lm
 
 # Модуль загрузки MPI (для HPC кластера)
 MODULE_LOAD_MPI ?= module load SpectrumMPI 2>/dev/null ;
@@ -83,7 +84,7 @@ $(MPI_OMP_BIN): $(MPI_OMP_SRC) $(SRC_DIR)/poisson_solver_mpi_omp.h $(SRC_DIR)/do
 	$(MODULE_LOAD_MPI) $(MPICXX) $(CXXFLAGS_BASE) $(OMPFLAGS) -o $@ $(MPI_OMP_SRC)
 
 $(MPI_CUDA_BIN): $(MPI_CUDA_SRC) $(SRC_DIR)/poisson_solver_mpi_cuda.h $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
-	$(MODULE_LOAD_MPI) $(NVCC) $(NVCCFLAGS) -I$(SRC_DIR) -o $@ $(MPI_CUDA_SRC)
+	$(MODULE_LOAD_MPI) $(NVCC) $(NVCCFLAGS) -I$(SRC_DIR) $(NVCCLINKFLAGS) -o $@ $(MPI_CUDA_SRC)
 
 $(TEST_DECOMP_BIN): $(TEST_DECOMP_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) -o $@ $(TEST_DECOMP_SRC)
