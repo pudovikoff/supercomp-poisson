@@ -4,7 +4,7 @@
 #BSUB -e poisson_mpi_cuda_%J.err
 #BSUB -n 4
 #BSUB -W 00:15
-#BSUB –gpu num=2:mode=shared:mps=yes
+#BSUB -gpu "num=2:mode=shared:mps=yes"
 
 
 
