@@ -1,10 +1,11 @@
 #!/bin/bash
-#BSUB -n 16
+#BSUB -n 8
 #BSUB -W 00:30
 #BSUB -J "poisson_mpi_omp_table3"
 #BSUB -o "poisson_mpi_omp_table3.%J.out"
 #BSUB -e "poisson_mpi_omp_table3.%J.err"
-#BSUB -R "affinity[core(8)]"
+#BSUB -R "affinity[core(4)]"
+
 
 # Скрипт для заполнения Таблицы 3: MPI+OpenMP код на IBM Polus
 # 

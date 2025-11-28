@@ -46,8 +46,8 @@ TEST_DECOMP_SRC = $(TESTS_DIR)/test_domain_decomposition.cpp
 TEST_DECOMP_BIN = $(BIN_DIR)/test_domain_decomposition
 
 # Цели сборки
-# По умолчанию собираем всё (может быть проблема с OpenMP на macOS)
-all: $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN)
+# По умолчанию собираем всё (OpenMP может быть проблема на macOS)
+all: $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN) $(MPI_CUDA_BIN)
 
 # Только MPI версия
 mpi: $(MPI_BIN)
@@ -83,7 +83,7 @@ $(MPI_OMP_BIN): $(MPI_OMP_SRC) $(SRC_DIR)/poisson_solver_mpi_omp.h $(SRC_DIR)/do
 	$(MODULE_LOAD_MPI) $(MPICXX) $(CXXFLAGS_BASE) $(OMPFLAGS) -o $@ $(MPI_OMP_SRC)
 
 $(MPI_CUDA_BIN): $(MPI_CUDA_SRC) $(SRC_DIR)/poisson_solver_mpi_cuda.h $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) -I$(SRC_DIR) -o $@ $(MPI_CUDA_SRC)
+	$(MODULE_LOAD_MPI) $(NVCC) $(NVCCFLAGS) -I$(SRC_DIR) -o $@ $(MPI_CUDA_SRC)
 
 $(TEST_DECOMP_BIN): $(TEST_DECOMP_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) -o $@ $(TEST_DECOMP_SRC)
