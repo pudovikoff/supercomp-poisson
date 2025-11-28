@@ -1,0 +1,67 @@
+#!/bin/bash
+#BSUB -n 16
+#BSUB -W 00:30
+#BSUB -J "poisson_mpi_omp_test"
+#BSUB -o "poisson_mpi_omp_test.%J.out"
+#BSUB -e "poisson_mpi_omp_test.%J.err"
+# #BSUB -R "affinity[core(4)]"
+
+
+# Скрипт для тестирования гибридной MPI+OpenMP версии
+# 
+# Запускает программу в следующих конфигурациях:
+# - Последовательный код (для reference)
+# - 1 процесс × 4 нити
+# - 2 процесса × 4 нити
+
+# Параметры сетки (фиксированные)
+M=800
+N=1200
+
+echo "=========================================="
+echo "Poisson Solver - Гибридный MPI+OpenMP"
+echo "=========================================="
+echo "Задание: $LSB_JOBID"
+echo "Узел: $(hostname)"
+echo "Дата: $(date)"
+echo "Сетка: ${M} x ${N}"
+echo "=========================================="
+
+# Загрузка модулей
+module load SpectrumMPI
+
+# Исправление perl warnings о локали
+export LC_ALL=C
+export LANG=C
+
+
+if [ ! -f "./bin/poisson_mpi_omp" ]; then
+    echo "ОШИБКА: файл ./bin/poisson_mpi_omp не найден!"
+    echo "Выполните: make mpi_omp"
+    exit 1
+fi
+
+echo ""
+echo "Начало тестов..."
+echo ""
+
+OUTPUT=$(mpiexec -n 16 ./bin/poisson_mpi_omp --M $M --N $N --threads 8 2>&1)
+echo "$OUTPUT"
+
+ITERS=$(echo "$OUTPUT" | grep "Iterations:" | awk '{print $2}')
+TIME=$(echo "$OUTPUT" | grep "Time:" | awk '{print $2}')
+NORM_E=$(echo "$OUTPUT" | grep "||w||_E" | awk -F'= ' '{print $2}' | awk -F',' '{print $1}')
+NORM_C=$(echo "$OUTPUT" | grep "||w||_C" | awk -F'= ' '{print $2}')
+
+if [ -z "$TIME" ]; then
+    echo "ВНИМАНИЕ: не удалось извлечь время выполнения"
+else
+    if [ -n "$BASE_TIME" ]; then
+        SPEEDUP=$(echo "scale=2; $BASE_TIME / $TIME" | bc)
+    else
+        SPEEDUP="N/A"
+    fi
+    printf "%-20s %-12s %-12s %-12s %-15s %-15s\n" "2 proc × 4 threads" "$ITERS" "$TIME" "$SPEEDUP" "$NORM_E" "$NORM_C"
+fi
+
+
