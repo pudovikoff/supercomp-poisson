@@ -5,6 +5,12 @@ CXX ?= g++
 MPICXX ?= mpicxx
 CXXFLAGS_BASE = -std=c++11 -O2 -Wall
 
+# CUDA компилятор и параметры (для MPI+CUDA версии)
+NVCC ?= nvcc
+ARCH ?= sm_35
+HOST_COMP ?= mpicc
+NVCCFLAGS = -arch=$(ARCH) -ccbin=$(HOST_COMP) -O3 -Xcompiler -fPIC
+
 # Модуль загрузки MPI (для HPC кластера)
 MODULE_LOAD_MPI ?= module load SpectrumMPI 2>/dev/null ;
 
@@ -27,11 +33,13 @@ SEQ_SRC = $(SRC_DIR)/poisson_sequential.cpp
 OMP_SRC = $(SRC_DIR)/poisson_omp.cpp
 MPI_SRC = $(SRC_DIR)/poisson_mpi.cpp
 MPI_OMP_SRC = $(SRC_DIR)/poisson_mpi_omp.cpp
+MPI_CUDA_SRC = $(SRC_DIR)/poisson_mpi_cuda.cu
 
 SEQ_BIN = $(BIN_DIR)/poisson_sequential
 OMP_BIN = $(BIN_DIR)/poisson_omp
 MPI_BIN = $(BIN_DIR)/poisson_mpi
 MPI_OMP_BIN = $(BIN_DIR)/poisson_mpi_omp
+MPI_CUDA_BIN = $(BIN_DIR)/poisson_mpi_cuda
 
 # Тесты
 TEST_DECOMP_SRC = $(TESTS_DIR)/test_domain_decomposition.cpp
@@ -53,6 +61,9 @@ seq: $(SEQ_BIN)
 # Гибридная MPI+OpenMP версия
 mpi_omp: $(MPI_OMP_BIN)
 
+# MPI+CUDA версия
+mpi_cuda: $(MPI_CUDA_BIN)
+
 $(BIN_DIR):
 	@mkdir -p $(BIN_DIR)
 
@@ -71,11 +82,14 @@ $(MPI_BIN): $(MPI_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 $(MPI_OMP_BIN): $(MPI_OMP_SRC) $(SRC_DIR)/poisson_solver_mpi_omp.h $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(MODULE_LOAD_MPI) $(MPICXX) $(CXXFLAGS_BASE) $(OMPFLAGS) -o $@ $(MPI_OMP_SRC)
 
+$(MPI_CUDA_BIN): $(MPI_CUDA_SRC) $(SRC_DIR)/poisson_solver_mpi_cuda.h $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -I$(SRC_DIR) -o $@ $(MPI_CUDA_SRC)
+
 $(TEST_DECOMP_BIN): $(TEST_DECOMP_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS_BASE) -o $@ $(TEST_DECOMP_SRC)
 
 clean:
-	rm -f $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN) $(TEST_DECOMP_BIN)
+	rm -f $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN) $(MPI_CUDA_BIN) $(TEST_DECOMP_BIN)
 	rm -f $(RESULTS_DIR)/solution_*.txt
 
 run_seq: $(SEQ_BIN) | $(RESULTS_DIR)
@@ -93,11 +107,15 @@ run_mpi: $(MPI_BIN) | $(RESULTS_DIR)
 run_mpi_omp: $(MPI_OMP_BIN) | $(RESULTS_DIR)
 	$(MODULE_LOAD_MPI) mpirun -np $(NP) $< --M $(M) --N $(N) --threads $(THREADS)
 
+# Пример: make run_mpi_cuda NP=4 M=400 N=400
+run_mpi_cuda: $(MPI_CUDA_BIN) | $(RESULTS_DIR)
+	$(MODULE_LOAD_MPI) mpirun -np $(NP) $< --M $(M) --N $(N)
+
 # Локальный тест разбиения
 test_decomp: $(TEST_DECOMP_BIN)
 	$<
 
-.PHONY: all mpi omp seq mpi_omp clean run_seq run_omp run_mpi run_mpi_omp test_decomp help
+.PHONY: all mpi omp seq mpi_omp mpi_cuda clean run_seq run_omp run_mpi run_mpi_omp run_mpi_cuda test_decomp help
 
 # Справка
 help:
@@ -111,11 +129,13 @@ help:
 	@echo "  make omp        - собрать OpenMP версию"
 	@echo "  make seq        - собрать последовательную версию"
 	@echo "  make mpi_omp    - собрать гибридную MPI+OpenMP версию"
+	@echo "  make mpi_cuda   - собрать MPI+CUDA версию (ARCH=sm_35 HOST_COMP=mpicc)"
 	@echo ""
 	@echo "Запуск:"
 	@echo "  make run_mpi NP=4 M=40 N=40                - запустить MPI версию"
 	@echo "  make run_omp M=40 N=40 THREADS=4           - запустить OpenMP версию"
 	@echo "  make run_mpi_omp NP=2 M=40 N=40 THREADS=4  - запустить MPI+OpenMP версию"
+	@echo "  make run_mpi_cuda NP=4 M=400 N=400         - запустить MPI+CUDA версию"
 	@echo ""
 	@echo "Примечание:"
 	@echo "  - MPI версии используют mpicxx (автоматическая линковка библиотек)"
