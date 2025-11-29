@@ -311,7 +311,7 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(Ddiag_dev));
     CUDA_CHECK(cudaFree(F_dev));
     CUDA_CHECK(cudaFree(reduction_buffer_dev));
-    CUDA_CHECK(cudaFreeHost(reduction_buffer_host));
+    free(reduction_buffer_host);  // Обычный free вместо cudaFreeHost
     
     CUDA_CHECK(cudaEventDestroy(event_start));
     CUDA_CHECK(cudaEventDestroy(event_stop));
@@ -391,9 +391,13 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     int buffer_size = num_reduction_blocks * reduction_threads_per_block;
     CUDA_CHECK(cudaMalloc(&reduction_buffer_dev, buffer_size * sizeof(double)));
     
-    // Pinned memory для быстрого копирования (из лекции)
-    CUDA_CHECK(cudaHostAlloc(&reduction_buffer_host, num_reduction_blocks * sizeof(double), 
-                            cudaHostAllocDefault));
+    // Обычный malloc вместо pinned memory для совместимости с IBM Spectrum MPI
+    // cudaHostAlloc конфликтует с libpami_cudahook.so на CUDA-aware MPI
+    reduction_buffer_host = (double*)malloc(num_reduction_blocks * sizeof(double));
+    if (!reduction_buffer_host) {
+        fprintf(stderr, "Failed to allocate reduction_buffer_host\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 void PoissonSolverMPICUDA::copy_coefficients_to_device() {
