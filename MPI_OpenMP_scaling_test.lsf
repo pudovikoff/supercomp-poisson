@@ -1,10 +1,11 @@
 #!/bin/bash
-#BSUB -n 8
+#BSUB -n 10
 #BSUB -W 00:30
 #BSUB -J "poisson_mpi_omp_table3"
 #BSUB -o "poisson_mpi_omp_table3.%J.out"
 #BSUB -e "poisson_mpi_omp_table3.%J.err"
-#BSUB -R "affinity[core(4)]"
+#BSUB -R "affinity[core(2)]"
+export OMP_NUM_THREADS=16     # 10 ?^?де?^? ?^? 8 по?^?оков на ?^?д?^?о
 
 
 # Скрипт для заполнения Таблицы 3: MPI+OpenMP код на IBM Polus
@@ -59,9 +60,9 @@ N_ARRAY_1=(600 600 600 600)
 
 # Группа 2: 4 процесса, сетка 800×1200
 NP_ARRAY_2=(4 4 4 4)
-THREADS_ARRAY_2=(1 2 4 8)
-M_ARRAY_2=(800 800 800 800)
-N_ARRAY_2=(1200 1200 1200 1200)
+THREADS_ARRAY_2=(1 2 4 8 16)
+M_ARRAY_2=(800 800 800 800 2000)
+N_ARRAY_2=(1200 1200 1200 1200 3200)
 
 # Объединяем массивы
 ALL_NP=(${NP_ARRAY_1[@]} ${NP_ARRAY_2[@]})
