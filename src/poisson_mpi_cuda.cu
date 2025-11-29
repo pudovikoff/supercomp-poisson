@@ -103,6 +103,77 @@ __global__ void copy_flat_to_interior_kernel(const double* src_flat, double* dst
     }
 }
 
+// Обновление w_interior += alpha * p и вычисление ||alpha*p||^2 для проверки сходимости
+__global__ void update_w_and_compute_diff_kernel(double* w_interior, const double* p,
+                                                 double alpha, double* thread_diffs,
+                                                 int n, int num_blocks) {
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int grid_size = blockDim.x * gridDim.x;
+    
+    double local_diff_sq = 0.0;
+    
+    for (int i = idx; i < n; i += grid_size) {
+        double inc = alpha * p[i];
+        w_interior[i] += inc;
+        local_diff_sq += inc * inc;
+    }
+    
+    __syncthreads();
+    
+    // Записываем результат каждой нити
+    double* thread_results = thread_diffs + blockIdx.x * blockDim.x;
+    thread_results[tid] = local_diff_sq;
+    
+    __syncthreads();
+    
+    // Первая нить блока суммирует
+    if (tid == 0) {
+        double block_sum = 0.0;
+        for (int i = 0; i < blockDim.x; i++) {
+            block_sum += thread_results[i];
+        }
+        thread_diffs[blockIdx.x] = block_sum;
+    }
+}
+
+// Скалярное произведение: этап 1 - каждый блок вычисляет частичную сумму
+// Используем только глобальную память (правило 10 запрещает shared memory для редукции)
+__global__ void dot_product_partial_kernel(const double* vec1, const double* vec2,
+                                           double* block_sums, int n) {
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int grid_size = blockDim.x * gridDim.x;
+    
+    double sum = 0.0;
+    
+    // Grid-stride loop для обработки больших массивов (из лекции - ILP)
+    for (int i = idx; i < n; i += grid_size) {
+        sum += vec1[i] * vec2[i];
+    }
+    
+    // Последовательная редукция внутри блока через глобальную память
+    // Каждая нить записывает свой результат
+    // Только первая нить блока суммирует результаты всех нитей блока
+    __syncthreads();
+    
+    // Временный буфер в глобальной памяти для нитей блока
+    // Выделяется извне и передается как block_sums + blockIdx.x * blockDim.x
+    double* thread_results = block_sums + blockIdx.x * blockDim.x;
+    thread_results[tid] = sum;
+    
+    __syncthreads();
+    
+    // Первая нить суммирует результаты всех нитей блока
+    if (tid == 0) {
+        double block_sum = 0.0;
+        for (int i = 0; i < blockDim.x; i++) {
+            block_sum += thread_results[i];
+        }
+        block_sums[blockIdx.x] = block_sum;
+    }
+}
+
 // ========== Функции запуска ядер ==========
 
 void launch_apply_A_kernel(const double* p_dev, double* Ap_dev,
@@ -150,6 +221,15 @@ void launch_copy_interior_from_device(double* ghost_dev, const double* flat_dev,
     copy_flat_to_interior_kernel<<<grid, block, 0, stream>>>(flat_dev, ghost_dev, nx, ny);
 }
 
+void launch_dot_product_partial(const double* vec1_dev, const double* vec2_dev,
+                               double* block_sums_dev, int n, 
+                               int num_blocks, int threads_per_block,
+                               cudaStream_t stream) {
+    // Выделяем достаточно места: num_blocks * threads_per_block для промежуточных результатов
+    dot_product_partial_kernel<<<num_blocks, threads_per_block, 0, stream>>>
+        (vec1_dev, vec2_dev, block_sums_dev, n);
+}
+
 // ========== Реализация класса PoissonSolverMPICUDA ==========
 
 // Определения статических членов
@@ -176,7 +256,7 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     h1 = (B1 - A1) / M;
     h2 = (B2 - A2) / N;
     double h = max(h1, h2);
-    eps = h * h;  // Согласно заданию: ε = h^2
+    eps = h * h;
     
     get_local_subdomain_nodes(M, N, Px, Py, px, py, ix0, ix1, iy0, iy1, nx, ny);
     
@@ -221,6 +301,7 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
 
 PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(w_dev));
+    CUDA_CHECK(cudaFree(w_interior_dev));
     CUDA_CHECK(cudaFree(r_dev));
     CUDA_CHECK(cudaFree(p_dev));
     CUDA_CHECK(cudaFree(Ap_dev));
@@ -229,6 +310,8 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(b_face_y_dev));
     CUDA_CHECK(cudaFree(Ddiag_dev));
     CUDA_CHECK(cudaFree(F_dev));
+    CUDA_CHECK(cudaFree(reduction_buffer_dev));
+    CUDA_CHECK(cudaFreeHost(reduction_buffer_host));
     
     CUDA_CHECK(cudaEventDestroy(event_start));
     CUDA_CHECK(cudaEventDestroy(event_stop));
@@ -287,6 +370,7 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     int n_with_ghost = (nx + 2) * (ny + 2);
     
     CUDA_CHECK(cudaMalloc(&w_dev, n_with_ghost * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&w_interior_dev, n_interior * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&r_dev, n_interior * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&p_dev, n_interior * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&Ap_dev, n_interior * sizeof(double)));
@@ -296,6 +380,20 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     CUDA_CHECK(cudaMalloc(&b_face_y_dev, nx * (ny+1) * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&Ddiag_dev, n_interior * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&F_dev, n_interior * sizeof(double)));
+    
+    // Буферы для редукций: выбираем 256 нитей/блок
+    reduction_threads_per_block = 256;
+    num_reduction_blocks = (n_interior + reduction_threads_per_block - 1) / reduction_threads_per_block;
+    // Ограничиваем число блоков для эффективности
+    if (num_reduction_blocks > 256) num_reduction_blocks = 256;
+    
+    // Выделяем: num_blocks * threads_per_block для промежуточных результатов нитей
+    int buffer_size = num_reduction_blocks * reduction_threads_per_block;
+    CUDA_CHECK(cudaMalloc(&reduction_buffer_dev, buffer_size * sizeof(double)));
+    
+    // Pinned memory для быстрого копирования (из лекции)
+    CUDA_CHECK(cudaHostAlloc(&reduction_buffer_host, num_reduction_blocks * sizeof(double), 
+                            cudaHostAllocDefault));
 }
 
 void PoissonSolverMPICUDA::copy_coefficients_to_device() {
@@ -377,6 +475,28 @@ double PoissonSolverMPICUDA::dot_product_cpu(const double* vec1, const double* v
     return sum * h1 * h2;
 }
 
+double PoissonSolverMPICUDA::dot_product_gpu(const double* vec1_dev, const double* vec2_dev, int n) {
+    // Запуск GPU kernel для частичных сумм
+    launch_dot_product_partial(vec1_dev, vec2_dev, reduction_buffer_dev, n,
+                              num_reduction_blocks, reduction_threads_per_block, 0);
+    
+    // Копируем только num_reduction_blocks элементов (вместо nx*ny)
+    double t0 = MPI_Wtime();
+    CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
+                         num_reduction_blocks * sizeof(double), cudaMemcpyDeviceToHost));
+    time_gpu_to_cpu += MPI_Wtime() - t0;
+    
+    // Финальная редукция на CPU
+    t0 = MPI_Wtime();
+    double sum = 0.0;
+    for (int i = 0; i < num_reduction_blocks; i++) {
+        sum += reduction_buffer_host[i];
+    }
+    time_cpu_reductions += MPI_Wtime() - t0;
+    
+    return sum * h1 * h2;
+}
+
 double PoissonSolverMPICUDA::max_norm_cpu(const double* vec, int n) {
     double m = 0.0;
     for (int i = 0; i < n; ++i) {
@@ -414,11 +534,9 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     
     int n_interior = nx * ny;
     
-    // Буферы на хосте для редукций
-    vector<double> r_host(n_interior), p_host(n_interior), Ap_host(n_interior), z_host(n_interior);
-    
     // Инициализация w на GPU (нули)
     CUDA_CHECK(cudaMemset(w_dev, 0, (nx+2)*(ny+2)*sizeof(double)));
+    CUDA_CHECK(cudaMemset(w_interior_dev, 0, n_interior*sizeof(double)));
     
     // Инициализация r = F на GPU
     double t0 = MPI_Wtime();
@@ -439,15 +557,8 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     CUDA_CHECK(cudaMemcpy(p_dev, z_dev, n_interior * sizeof(double), cudaMemcpyDeviceToDevice));
     time_vector_ops += MPI_Wtime() - t0;
     
-    // Вычисление rz_global = (z, r)
-    t0 = MPI_Wtime();
-    CUDA_CHECK(cudaMemcpy(r_host.data(), r_dev, n_interior * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(z_host.data(), z_dev, n_interior * sizeof(double), cudaMemcpyDeviceToHost));
-    time_gpu_to_cpu += MPI_Wtime() - t0;
-    
-    t0 = MPI_Wtime();
-    double rz_local = dot_product_cpu(z_host.data(), r_host.data(), n_interior);
-    time_cpu_reductions += MPI_Wtime() - t0;
+    // Вычисление rz_global = (z, r) на GPU
+    double rz_local = dot_product_gpu(z_dev, r_dev, n_interior);
     
     double rz_global = 0.0;
     t0 = MPI_Wtime();
@@ -478,15 +589,8 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_apply_A += ms / 1000.0;
         
-        // Вычисление alpha
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(Ap_host.data(), Ap_dev, n_interior * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(p_host.data(), p_dev, n_interior * sizeof(double), cudaMemcpyDeviceToHost));
-        time_gpu_to_cpu += MPI_Wtime() - t0;
-        
-        t0 = MPI_Wtime();
-        double denom_local = dot_product_cpu(Ap_host.data(), p_host.data(), n_interior);
-        time_cpu_reductions += MPI_Wtime() - t0;
+        // Вычисление alpha на GPU
+        double denom_local = dot_product_gpu(Ap_dev, p_dev, n_interior);
         
         double denom = 0.0;
         t0 = MPI_Wtime();
@@ -495,21 +599,22 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         double alpha = rz_global / denom;
         
-        // Копируем w на хост для обновления
+        // w_interior += alpha * p и вычисление ||alpha*p||^2 на GPU
+        update_w_and_compute_diff_kernel<<<num_reduction_blocks, reduction_threads_per_block>>>
+            (w_interior_dev, p_dev, alpha, reduction_buffer_dev, n_interior, num_reduction_blocks);
+        
+        // Копируем частичные суммы diff
         t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
+                             num_reduction_blocks * sizeof(double), cudaMemcpyDeviceToHost));
         time_gpu_to_cpu += MPI_Wtime() - t0;
         
-        // w = w + alpha * p (на хосте для проверки сходимости)
+        t0 = MPI_Wtime();
         double diff_sq_local = 0.0;
-        for (int il = 1; il <= nx; ++il) {
-            for (int jl = 1; jl <= ny; ++jl) {
-                int idx = (il-1) * ny + (jl-1);
-                double inc = alpha * p_host[idx];
-                w.at(il, jl) += inc;
-                diff_sq_local += inc * inc;
-            }
+        for (int i = 0; i < num_reduction_blocks; i++) {
+            diff_sq_local += reduction_buffer_host[i];
         }
+        time_cpu_reductions += MPI_Wtime() - t0;
         
         double diff_sq = 0.0;
         t0 = MPI_Wtime();
@@ -521,17 +626,16 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             iters = k + 1;
             tsec = MPI_Wtime() - t_total_start;
             
-            // Копируем финальное w обратно на GPU
+            // Копируем w_interior в w_dev для финального результата
+            launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            
+            // Копируем на хост для вывода норм
             t0 = MPI_Wtime();
-            CUDA_CHECK(cudaMemcpy(w_dev, w.data.data(), (nx+2)*(ny+2)*sizeof(double), cudaMemcpyHostToDevice));
-            time_cpu_to_gpu += MPI_Wtime() - t0;
+            CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
+            time_gpu_to_cpu += MPI_Wtime() - t0;
             return;
         }
-        
-        // Копируем обновлённое w на GPU
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(w_dev, w.data.data(), (nx+2)*(ny+2)*sizeof(double), cudaMemcpyHostToDevice));
-        time_cpu_to_gpu += MPI_Wtime() - t0;
         
         // r = r - alpha * Ap (на GPU)
         CUDA_CHECK(cudaEventRecord(event_start));
@@ -549,15 +653,8 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_apply_D_inv += ms / 1000.0;
         
-        // Вычисление rz_new
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(r_host.data(), r_dev, n_interior * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(z_host.data(), z_dev, n_interior * sizeof(double), cudaMemcpyDeviceToHost));
-        time_gpu_to_cpu += MPI_Wtime() - t0;
-        
-        t0 = MPI_Wtime();
-        double rz_new_local = dot_product_cpu(z_host.data(), r_host.data(), n_interior);
-        time_cpu_reductions += MPI_Wtime() - t0;
+        // Вычисление rz_new на GPU
+        double rz_new_local = dot_product_gpu(z_dev, r_dev, n_interior);
         
         double rz_new = 0.0;
         t0 = MPI_Wtime();
@@ -579,6 +676,10 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     }
     
     tsec = MPI_Wtime() - t_total_start;
+    
+    // Копируем w_interior в w_dev для финального результата
+    launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
+    CUDA_CHECK(cudaDeviceSynchronize());
     
     // Копируем финальное w обратно на хост
     t0 = MPI_Wtime();

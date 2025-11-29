@@ -104,8 +104,15 @@ public:
     
     // GPU указатели
     double *w_dev;           // (nx+2)*(ny+2) - с граничными слоями
+    double *w_interior_dev;  // nx*ny - только внутренние узлы w (для CG)
     double *r_dev, *p_dev, *Ap_dev, *z_dev;  // nx*ny - только внутренние узлы
     double *a_face_x_dev, *b_face_y_dev, *Ddiag_dev, *F_dev;
+    
+    // Буферы для GPU-редукций
+    double *reduction_buffer_dev;  // Для промежуточных сумм
+    double *reduction_buffer_host; // Pinned memory для быстрого копирования
+    int num_reduction_blocks;
+    int reduction_threads_per_block;
     
     // Таймеры для отчёта
     double time_init_gpu;
@@ -157,6 +164,9 @@ private:
     // CPU редукции
     double dot_product_cpu(const double* vec1, const double* vec2, int n);
     double max_norm_cpu(const double* vec, int n);
+    
+    // GPU редукция (2-ступенчатая: GPU partial + CPU final)
+    double dot_product_gpu(const double* vec1_dev, const double* vec2_dev, int n);
 };
 
 // Объявления CUDA ядер (определены в .cu файле)
@@ -180,3 +190,8 @@ void launch_copy_interior_to_device(double* w_dev, const double* w_host,
 
 void launch_copy_interior_from_device(double* w_host, const double* w_dev,
                                      int nx, int ny, cudaStream_t stream);
+
+void launch_dot_product_partial(const double* vec1_dev, const double* vec2_dev,
+                               double* block_sums_dev, int n,
+                               int num_blocks, int threads_per_block,
+                               cudaStream_t stream);

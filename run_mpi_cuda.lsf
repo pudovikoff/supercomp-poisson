@@ -20,6 +20,8 @@ echo "Number of MPI processes: 4"
 echo "Grid size: M=800, N=1200"
 echo ""
 
+module load SpectrumMPI
+
 # Запуск программы
 mpirun -n 4 ./bin/poisson_mpi_cuda --M 800 --N 1200
 echo ""
