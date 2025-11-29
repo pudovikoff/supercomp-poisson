@@ -1,0 +1,29 @@
+#!/bin/bash
+#BSUB -J "poisson_sequential_2000x3200"
+#BSUB -n 1
+#BSUB -W 00:30
+#BSUB -oo "results/final_sequential.out"
+#BSUB -eo "results/final_sequential.err"
+
+
+
+echo "=== Sequential Poisson Solver 2000x3200 ==="
+echo "Start time: $(date)"
+echo "Host: $(hostname)"
+echo "CPU info: $(nproc) cores available"
+echo ""
+
+
+# Ensure binary is built
+if [ ! -f bin/poisson_sequential ]; then
+    echo "Building sequential version..."
+    make clean seq
+fi
+
+# Run solver
+echo "Running sequential version with M=2000, N=3200..."
+time ./bin/poisson_sequential --M 2000 --N 3200 --delta 1e-6 --max_iter 200000
+
+echo ""
+echo "End time: $(date)"
+echo "=== Job completed ==="

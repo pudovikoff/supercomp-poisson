@@ -1,0 +1,45 @@
+#!/bin/bash
+#BSUB -J "poisson_openmp_2000x3200"
+#BSUB -n 16
+#BSUB -R "span[ptile=16]"
+#BSUB -W 00:30
+#BSUB -oo "results/final_openmp.out"
+#BSUB -eo "results/final_openmp.err"
+
+# OpenMP Poisson solver: 2000 x 3200 grid
+# 16 threads on 1 node
+# Wall-clock time: ~10-15 minutes estimated
+# Memory: ~100 MB
+
+echo "=== OpenMP Poisson Solver 2000x3200 ==="
+echo "Start time: $(date)"
+echo "Host: $(hostname)"
+echo "Allocated CPUs: $LSB_DJOB_NUMPROC"
+echo ""
+
+cd /Users/adpudovnikov/Documents/Study/SuperComp
+
+# Set OpenMP environment
+export OMP_NUM_THREADS=16
+export OMP_PLACES=cores
+export OMP_PROC_BIND=spread
+
+echo "OpenMP Configuration:"
+echo "  OMP_NUM_THREADS=$OMP_NUM_THREADS"
+echo "  OMP_PLACES=$OMP_PLACES"
+echo "  OMP_PROC_BIND=$OMP_PROC_BIND"
+echo ""
+
+# Ensure binary is built
+if [ ! -f bin/poisson_omp ]; then
+    echo "Building OpenMP version..."
+    make clean omp
+fi
+
+# Run solver
+echo "Running OpenMP version with M=2000, N=3200"
+time ./bin/poisson_omp --M 2000 --N 3200
+
+echo ""
+echo "End time: $(date)"
+echo "=== Job completed ==="

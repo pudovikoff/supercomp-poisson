@@ -1,0 +1,45 @@
+#!/bin/bash
+#BSUB -J "poisson_mpi_2000x3200_20procs"
+#BSUB -n 20
+#BSUB -R "span[ptile=20]"
+#BSUB -W 00:30
+#BSUB -oo "results/final_mpi.out"
+#BSUB -eo "results/final_mpi.err"
+
+# MPI Poisson solver: 2000 x 3200 grid
+# 20 MPI processes (5x4 process grid)
+# Wall-clock time: ~5-10 minutes estimated
+# Memory: ~100 MB total
+
+echo "=== MPI Poisson Solver 2000x3200 (20 processes) ==="
+echo "Start time: $(date)"
+echo "Host: $(hostname)"
+echo "Allocated processes: $LSB_DJOB_NUMPROC"
+echo ""
+
+cd /Users/adpudovnikov/Documents/Study/SuperComp
+
+# Load MPI module if available
+module load SpectrumMPI 2>/dev/null || echo "SpectrumMPI module not found, attempting direct mpirun..."
+
+echo "MPI Information:"
+echo "  Total processes: 20"
+echo "  Process grid: 5x4 (Px=5, Py=4)"
+echo ""
+
+# Ensure binary is built
+if [ ! -f bin/poisson_mpi ]; then
+    echo "Building MPI version..."
+    make clean mpi
+fi
+
+# Run solver
+echo "Running MPI version with M=2000, N=3200, 20 processes..."
+echo "Process grid: Px=5, Py=4 (5x4 decomposition)"
+echo ""
+
+time mpirun -np 20 ./bin/poisson_mpi --M 2000 --N 3200
+
+echo ""
+echo "End time: $(date)"
+echo "=== Job completed ==="
