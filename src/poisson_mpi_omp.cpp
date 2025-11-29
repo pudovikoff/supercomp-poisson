@@ -2,6 +2,8 @@
 #include <omp.h>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
+#include <iomanip>
 #include "poisson_solver_mpi_omp.h"
 #include "domain_decomposition.h"
 
@@ -87,6 +89,17 @@ int main(int argc, char** argv) {
         printf("Iterations: %d\n", iters);
         printf("Time: %lf s\n", tsec);
         printf("||w||_E = %e, ||w||_C = %e\n", nE, nC);
+        
+        std::cout << "\n=== Timing Breakdown ===" << std::endl;
+        std::cout << "Coefficients init:    " << std::fixed << std::setprecision(6) << solver.time_coefficients_init << " s" << std::endl;
+        std::cout << "apply_A:              " << std::fixed << std::setprecision(6) << solver.time_apply_A << " s" << std::endl;
+        std::cout << "apply_D_inv:          " << std::fixed << std::setprecision(6) << solver.time_apply_D_inv << " s" << std::endl;
+        std::cout << "Vector operations:    " << std::fixed << std::setprecision(6) << solver.time_vector_ops << " s" << std::endl;
+        std::cout << "MPI exchange:         " << std::fixed << std::setprecision(6) << solver.time_mpi_exchange << " s" << std::endl;
+        std::cout << "MPI allreduce:        " << std::fixed << std::setprecision(6) << solver.time_mpi_allreduce << " s" << std::endl;
+        std::cout << "Local reductions:     " << std::fixed << std::setprecision(6) << solver.time_local_reductions << " s" << std::endl;
+        std::cout << "---" << std::endl;
+        std::cout << "Total time (solve):   " << std::fixed << std::setprecision(6) << solver.time_total << " s" << std::endl << std::endl;
     }
 
     MPI_Comm_free(&cart_comm);

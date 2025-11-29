@@ -47,7 +47,7 @@ TEST_DECOMP_SRC = $(TESTS_DIR)/test_domain_decomposition.cpp
 TEST_DECOMP_BIN = $(BIN_DIR)/test_domain_decomposition
 
 # Цели сборки
-# По умолчанию собираем всё (OpenMP может быть проблема на macOS)
+# По умолчанию собираем всё
 all: $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN) $(MPI_CUDA_BIN)
 
 # Только MPI версия

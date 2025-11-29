@@ -108,6 +108,14 @@ public:
     vector<vector<double>> F;  // правая часть F[i][j] (M-1 x N-1)
     vector<vector<double>> D_diag;  // диагональный предобуславливатель
     
+    // Таймеры для детального анализа
+    double time_coefficients_init = 0.0;  // Инициализация коэффициентов
+    double time_apply_A = 0.0;            // Применение оператора A
+    double time_apply_D_inv = 0.0;        // Применение предобуславливателя D^{-1}
+    double time_vector_ops = 0.0;         // Векторные операции
+    double time_reductions = 0.0;         // Редукции (скалярные произведения, нормы)
+    double time_total = 0.0;              // Общее время работы solve_CG
+    
     PoissonSolver(int M_, int N_) : M(M_), N(N_) {
         h1 = (B1 - A1) / M;
         h2 = (B2 - A2) / N;
@@ -124,6 +132,8 @@ public:
     
     // Вычисление коэффициентов a, b, F
     void compute_coefficients() {
+        double t0 = MPI_Wtime();  // Начало измерения
+        
         // Коэффициенты a[i][j] для i = 1..M, j = 1..N
         for (int i = 1; i <= M; ++i) {
             for (int j = 1; j <= N; ++j) {
@@ -184,6 +194,8 @@ public:
                                (b[i + 1][j + 2] + b[i + 1][j + 1]) / (h2 * h2);
             }
         }
+        
+        time_coefficients_init += MPI_Wtime() - t0;  // Конец измерения
     }
     
     // Применение оператора A: Aw = result
@@ -246,6 +258,7 @@ public:
     
     // Метод сопряженных градиентов с предобуславливанием
     void solve_CG(vector<vector<double>>& w, double delta, int max_iter, int& iter_count, double& solve_time) {
+        double time_cg_start = MPI_Wtime();  // Начало общего таймера
         auto start_time = chrono::high_resolution_clock::now();
         
         // Инициализация
@@ -261,12 +274,18 @@ public:
         r = F;
         
         // Dz(0) = r(0)
+        double t0 = MPI_Wtime();
         apply_D_inv(r, z);
+        time_apply_D_inv += MPI_Wtime() - t0;
         
         // p(1) = z(0)
+        t0 = MPI_Wtime();
         p = z;
+        time_vector_ops += MPI_Wtime() - t0;
         
+        t0 = MPI_Wtime();
         double rz_old = dot_product(z, r);
+        time_reductions += MPI_Wtime() - t0;
         
         // Для контроля монотонности
         double H_prev = 0.0;
@@ -281,20 +300,27 @@ public:
         // Итерационный процесс
         for (int k = 0; k < max_iter; ++k) {
             // Ap = A * p
+            t0 = MPI_Wtime();
             apply_A(p, Ap);
+            time_apply_A += MPI_Wtime() - t0;
             
             // alpha = (z, r) / (Ap, p)
+            t0 = MPI_Wtime();
             double alpha = rz_old / dot_product(Ap, p);
+            time_reductions += MPI_Wtime() - t0;
             
             // w(k+1) = w(k) + alpha * p
+            t0 = MPI_Wtime();
             vector<vector<double>> w_new = w;
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
                     w_new[i][j] = w[i][j] + alpha * p[i][j];
                 }
             }
+            time_vector_ops += MPI_Wtime() - t0;
             
             // Проверка условия остановки
+            t0 = MPI_Wtime();
             double diff_norm = 0.0;
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
@@ -303,27 +329,35 @@ public:
                 }
             }
             diff_norm = sqrt(diff_norm * h1 * h2);
+            time_reductions += MPI_Wtime() - t0;
             
             w = w_new;
             
             if (diff_norm < delta) {
                 iter_count = k + 1;
+                time_total += MPI_Wtime() - time_cg_start;  // Конец общего таймера
                 auto end_time = chrono::high_resolution_clock::now();
                 solve_time = chrono::duration<double>(end_time - start_time).count();
                 return;
             }
             
             // r(k+1) = r(k) - alpha * Ap
+            t0 = MPI_Wtime();
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
                     r[i][j] = r[i][j] - alpha * Ap[i][j];
                 }
             }
+            time_vector_ops += MPI_Wtime() - t0;
             
             // Dz(k+1) = r(k+1)
+            t0 = MPI_Wtime();
             apply_D_inv(r, z);
+            time_apply_D_inv += MPI_Wtime() - t0;
             
+            t0 = MPI_Wtime();
             double rz_new = dot_product(z, r);
+            time_reductions += MPI_Wtime() - t0;
             
             // Контроль монотонности H(w)
             double H_curr = 0.0;
@@ -358,15 +392,18 @@ public:
             double beta = rz_new / rz_old;
             
             // p(k+1) = z(k+1) + beta * p(k)
+            t0 = MPI_Wtime();
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
                     p[i][j] = z[i][j] + beta * p[i][j];
                 }
             }
+            time_vector_ops += MPI_Wtime() - t0;
             
             rz_old = rz_new;
         }
         
+        time_total += MPI_Wtime() - time_cg_start;  // Конец общего таймера
         iter_count = max_iter;
         auto end_time = chrono::high_resolution_clock::now();
         solve_time = chrono::duration<double>(end_time - start_time).count();
@@ -418,7 +455,17 @@ int main(int argc, char* argv[]) {
         cout << "  Итераций: " << iter_count << endl;
         cout << "  Время решения: " << fixed << setprecision(6) << solve_time << " с" << endl;
         cout << "  Норма ||w||_E: " << scientific << norm_E << endl;
-        cout << "  Норма ||w||_C: " << scientific << norm_C << endl << endl;
+        cout << "  Норма ||w||_C: " << scientific << norm_C << endl;
+        
+        // Вывод детального тайминга
+        cout << "\n=== Timing Breakdown ===" << endl;
+        cout << "Coefficients init:    " << fixed << setprecision(6) << solver.time_coefficients_init << " s" << endl;
+        cout << "apply_A:              " << fixed << setprecision(6) << solver.time_apply_A << " s" << endl;
+        cout << "apply_D_inv:          " << fixed << setprecision(6) << solver.time_apply_D_inv << " s" << endl;
+        cout << "Vector operations:    " << fixed << setprecision(6) << solver.time_vector_ops << " s" << endl;
+        cout << "Local reductions:     " << fixed << setprecision(6) << solver.time_reductions << " s" << endl;
+        cout << "---" << endl;
+        cout << "Total time (solve):   " << fixed << setprecision(6) << solver.time_total << " s" << endl << endl;
         
         // Сохраняем решение для самой мелкой сетки
         if (M == 40) {

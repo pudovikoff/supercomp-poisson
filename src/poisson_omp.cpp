@@ -69,6 +69,14 @@ public:
     double eps;      // параметр фиктивных областей
 
     vector<vector<double>> a, b, F, D_diag;
+    
+    // Таймеры для детального анализа
+    double time_coefficients_init = 0.0;  // Инициализация коэффициентов
+    double time_apply_A = 0.0;            // Применение оператора A
+    double time_apply_D_inv = 0.0;        // Применение предобуславливателя D^{-1}
+    double time_vector_ops = 0.0;         // Векторные операции
+    double time_reductions = 0.0;         // Редукции (скалярные произведения, нормы)
+    double time_total = 0.0;              // Общее время работы solve_CG
 
     PoissonSolverOMP(int M_, int N_) : M(M_), N(N_) {
         h1 = (B1 - A1) / M; h2 = (B2 - A2) / N; eps = max(h1, h2) * max(h1, h2);
@@ -80,6 +88,8 @@ public:
     }
 
     void compute_coefficients() {
+        double t0 = omp_get_wtime();  // Начало измерения
+        
         // a[i][j]
         #pragma omp parallel for schedule(static) collapse(2)
         for (int i = 1; i <= M; ++i) {
@@ -124,6 +134,8 @@ public:
                                 (b[i + 1][j + 2] + b[i + 1][j + 1]) / (h2 * h2);
             }
         }
+        
+        time_coefficients_init += omp_get_wtime() - t0;  // Конец измерения
     }
 
     void apply_A(const vector<vector<double>>& w, vector<vector<double>>& res) {
@@ -170,6 +182,7 @@ public:
     }
 
     void solve_CG(vector<vector<double>>& w, double delta, int max_iter, int& iters, double& tsec) {
+        double time_cg_start = omp_get_wtime();  // Начало общего таймера
         double t0 = omp_get_wtime();
         vector<vector<double>> r(M - 1, vector<double>(N - 1, 0.0));
         vector<vector<double>> z(M - 1, vector<double>(N - 1, 0.0));
@@ -177,9 +190,15 @@ public:
         vector<vector<double>> Ap(M - 1, vector<double>(N - 1, 0.0));
         w.assign(M - 1, vector<double>(N - 1, 0.0));
         r = F; // r(0)
+        
+        t0 = omp_get_wtime();
         apply_D_inv(r, z); // z(0)
+        time_apply_D_inv += omp_get_wtime() - t0;
+        
         p = z; // p(1)
+        t0 = omp_get_wtime();
         double rz_old = dot_product(z, r);
+        time_reductions += omp_get_wtime() - t0;
 
         // Мониторинг монотонности
         double H_prev = 0.0;
@@ -191,33 +210,55 @@ public:
         H_prev *= h1 * h2;
 
         for (int k = 0; k < max_iter; ++k) {
+            t0 = omp_get_wtime();
             apply_A(p, Ap);
+            time_apply_A += omp_get_wtime() - t0;
+            
+            t0 = omp_get_wtime();
             double denom = dot_product(Ap, p);
             double alpha = rz_old / denom;
+            time_reductions += omp_get_wtime() - t0;
 
             // w = w + alpha * p
+            t0 = omp_get_wtime();
             #pragma omp parallel for schedule(static) collapse(2)
             for (int i = 0; i < M - 1; ++i)
                 for (int j = 0; j < N - 1; ++j)
                     w[i][j] += alpha * p[i][j];
+            time_vector_ops += omp_get_wtime() - t0;
 
             // diff_norm ~= ||alpha*p||_E
+            t0 = omp_get_wtime();
             double diff_sq = 0.0;
             #pragma omp parallel for reduction(+:diff_sq) schedule(static) collapse(2)
             for (int i = 0; i < M - 1; ++i)
                 for (int j = 0; j < N - 1; ++j)
                     diff_sq += (alpha * p[i][j]) * (alpha * p[i][j]);
             double diff_norm = sqrt(diff_sq * h1 * h2);
-            if (diff_norm < delta) { iters = k + 1; tsec = omp_get_wtime() - t0; return; }
+            time_reductions += omp_get_wtime() - t0;
+            
+            if (diff_norm < delta) {
+                time_total += omp_get_wtime() - time_cg_start;  // Конец общего таймера
+                iters = k + 1;
+                tsec = omp_get_wtime() - t0;
+                return;
+            }
 
             // r = r - alpha * Ap
+            t0 = omp_get_wtime();
             #pragma omp parallel for schedule(static) collapse(2)
             for (int i = 0; i < M - 1; ++i)
                 for (int j = 0; j < N - 1; ++j)
                     r[i][j] -= alpha * Ap[i][j];
+            time_vector_ops += omp_get_wtime() - t0;
 
+            t0 = omp_get_wtime();
             apply_D_inv(r, z);
+            time_apply_D_inv += omp_get_wtime() - t0;
+            
+            t0 = omp_get_wtime();
             double rz_new = dot_product(z, r);
+            time_reductions += omp_get_wtime() - t0;
 
             // Контроль монотонности H(w)
             double H_curr = 0.0;
@@ -233,12 +274,16 @@ public:
             H_prev = H_curr;
 
             double beta = rz_new / rz_old;
+            t0 = omp_get_wtime();
             #pragma omp parallel for schedule(static) collapse(2)
             for (int i = 0; i < M - 1; ++i)
                 for (int j = 0; j < N - 1; ++j)
                     p[i][j] = z[i][j] + beta * p[i][j];
+            time_vector_ops += omp_get_wtime() - t0;
+            
             rz_old = rz_new;
         }
+        time_total += omp_get_wtime() - time_cg_start;  // Конец общего таймера
         iters = max_iter; tsec = omp_get_wtime() - t0;
     }
 
@@ -282,6 +327,16 @@ int main(int argc, char* argv[]) {
     cout << "Iterations: " << iters << "\n";
     cout << fixed << setprecision(6) << "Time: " << tsec << " s\n";
     cout << scientific << "||w||_E = " << nE << ", ||w||_C = " << nC << "\n";
+    
+    // Вывод детального тайминга
+    cout << "\n=== Timing Breakdown ===" << endl;
+    cout << "Coefficients init:    " << fixed << setprecision(6) << solver.time_coefficients_init << " s" << endl;
+    cout << "apply_A:              " << fixed << setprecision(6) << solver.time_apply_A << " s" << endl;
+    cout << "apply_D_inv:          " << fixed << setprecision(6) << solver.time_apply_D_inv << " s" << endl;
+    cout << "Vector operations:    " << fixed << setprecision(6) << solver.time_vector_ops << " s" << endl;
+    cout << "Local reductions:     " << fixed << setprecision(6) << solver.time_reductions << " s" << endl;
+    cout << "---" << endl;
+    cout << "Total time (solve):   " << fixed << setprecision(6) << solver.time_total << " s" << endl << endl;
 
     string out = args.out.empty() ? (string("results/solution_") + to_string(args.M) + "x" + to_string(args.N) + ".txt") : args.out;
     solver.save_solution(w, out);

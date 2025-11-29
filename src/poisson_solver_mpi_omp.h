@@ -104,6 +104,16 @@ public:
     vector<double> F;
     vector<double> Ddiag;
     
+    // Таймеры для детального анализа
+    double time_coefficients_init = 0.0;  // Инициализация коэффициентов
+    double time_apply_A = 0.0;            // Применение оператора A
+    double time_apply_D_inv = 0.0;        // Применение предобуславливателя D^{-1}
+    double time_vector_ops = 0.0;         // Векторные операции
+    double time_mpi_exchange = 0.0;       // Обмены граничными значениями
+    double time_mpi_allreduce = 0.0;      // Глобальные редукции
+    double time_local_reductions = 0.0;   // Локальные редукции
+    double time_total = 0.0;              // Общее время работы solve_CG
+    
     // Встроенные функции доступа к коэффициентам
     inline double& afx(int il, int jl) {
         return a_face_x[il*ny + jl]; // il∈[0..nx], jl∈[0..ny-1]
@@ -162,6 +172,8 @@ public:
     
 private:
     void compute_coefficients() {
+        double t0 = MPI_Wtime();
+        
         // Заполнение a_face_x
         #pragma omp parallel for schedule(static)
         for (int il = 0; il <= nx; ++il) {
@@ -210,10 +222,13 @@ private:
                 dij(il, jl) = (aL + aR) / (h1*h1) + (bD + bU) / (h2*h2);
             }
         }
+        
+        time_coefficients_init += MPI_Wtime() - t0;
     }
     
 public:
     void exchange(Grid2D& U) {
+        double t0 = MPI_Wtime();
         MPI_Status st;
         
         // Вдоль Y (нижняя/верхняя границы) — целые строки длиной nx
@@ -264,9 +279,12 @@ public:
             for (int jl = 1; jl <= ny; ++jl) U.at(0, jl) = recv_left[jl - 1];
         else
             for (int jl = 1; jl <= ny; ++jl) U.at(0, jl) = 0.0;
+        
+        time_mpi_exchange += MPI_Wtime() - t0;
     }
     
     void apply_A(const Grid2D& U, Grid2D& RES) {
+        double t0 = MPI_Wtime();
         #pragma omp parallel for schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il) {
             for (int jl = 1; jl <= ny; ++jl) {
@@ -279,13 +297,16 @@ public:
                 RES.at(il, jl) = -(d2x + d2y);
             }
         }
+        
+        time_apply_A += MPI_Wtime() - t0;
     }
     
-    void apply_D_inv(const Grid2D& R, Grid2D& Z) {
         #pragma omp parallel for schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il)
             for (int jl = 1; jl <= ny; ++jl)
                 Z.at(il, jl) = R.at(il, jl) / dij(il, jl);
+        
+        time_apply_D_inv += MPI_Wtime() - t0;
     }
     
     double dot_product_local(const Grid2D& U, const Grid2D& V) {
@@ -329,7 +350,8 @@ public:
     }
     
     void solve_CG(Grid2D& w, double delta, int max_iter, int& iters, double& tsec) {
-        double t0 = MPI_Wtime();
+        double time_cg_start = MPI_Wtime();
+        double t0 = time_cg_start;
         
         Grid2D r(nx, ny), z(nx, ny), p(nx, ny), Ap(nx, ny);
         
@@ -344,12 +366,21 @@ public:
         
         apply_D_inv(r, z); // z(0)
         
+        t0 = MPI_Wtime();
         #pragma omp parallel for schedule(static) collapse(2) 
         for (int il = 1; il <= nx; ++il)
             for (int jl = 1; jl <= ny; ++jl)
                 p.at(il, jl) = z.at(il, jl); // p(1)
+        time_vector_ops += MPI_Wtime() - t0;
         
-        double rz_global = dot_product_global(z, r);
+        // rz_global = <z, r> (локально + allreduce)
+        t0 = MPI_Wtime();
+        double rz_local0 = dot_product_local(z, r);
+        time_local_reductions += MPI_Wtime() - t0;
+        t0 = MPI_Wtime();
+        double rz_global = 0.0;
+        MPI_Allreduce(&rz_local0, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+        time_mpi_allreduce += MPI_Wtime() - t0;
         
         // Мониторинг H(w)
         double H_prev = 0.0;
@@ -359,11 +390,17 @@ public:
             exchange(p);
             apply_A(p, Ap);
             
+            // denom = <Ap, p> (локально + allreduce)
+            t0 = MPI_Wtime();
             double denom_local = dot_product_local(Ap, p), denom = 0.0;
+            time_local_reductions += MPI_Wtime() - t0;
+            t0 = MPI_Wtime();
             MPI_Allreduce(&denom_local, &denom, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+            time_mpi_allreduce += MPI_Wtime() - t0;
             double alpha = rz_global / denom;
             
             // w = w + alpha * p; также считаем норму шага
+            t0 = MPI_Wtime();
             double diff_sq_local = 0.0;
             #pragma omp parallel for reduction(+:diff_sq_local) schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il) {
@@ -373,40 +410,56 @@ public:
                     diff_sq_local += inc * inc;
                 }
             }
+            time_vector_ops += MPI_Wtime() - t0;
+            t0 = MPI_Wtime();
             double diff_sq = 0.0;
             MPI_Allreduce(&diff_sq_local, &diff_sq, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+            time_mpi_allreduce += MPI_Wtime() - t0;
             double diff_norm = sqrt(diff_sq * h1 * h2);
             if (diff_norm < delta) {
                 iters = k + 1;
-                tsec = MPI_Wtime() - t0;
+                tsec = MPI_Wtime() - time_cg_start;
+                time_total += MPI_Wtime() - time_cg_start;
                 return;
             }
             
             // r = r - alpha * Ap
+            t0 = MPI_Wtime();
             #pragma omp parallel for schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il)
                 for (int jl = 1; jl <= ny; ++jl)
                     r.at(il, jl) -= alpha * Ap.at(il, jl);
+            time_vector_ops += MPI_Wtime() - t0;
             
             // z = D^{-1} r
             apply_D_inv(r, z);
             
+            // rz_new = <z, r>
+            t0 = MPI_Wtime();
             double rz_new_local = dot_product_local(z, r), rz_new = 0.0;
+            time_local_reductions += MPI_Wtime() - t0;
+            t0 = MPI_Wtime();
             MPI_Allreduce(&rz_new_local, &rz_new, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+            time_mpi_allreduce += MPI_Wtime() - t0;
             
             // Контроль монотонности H(w)
             double H_curr_local = 0.0;
+            t0 = MPI_Wtime();
             #pragma omp parallel for reduction(+:H_curr_local) schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il)
                 for (int jl = 1; jl <= ny; ++jl)
                     H_curr_local += (fij(il, jl) + r.at(il, jl)) * w.at(il, jl);
+            time_local_reductions += MPI_Wtime() - t0;
             double H_curr = 0.0;
+            t0 = MPI_Wtime();
             MPI_Allreduce(&H_curr_local, &H_curr, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+            time_mpi_allreduce += MPI_Wtime() - t0;
             H_curr *= h1 * h2;
             
             if (k == 0) H_prev = H_curr;
             if (H_curr < H_prev) {
                 // Перезапуск
+                t0 = MPI_Wtime();
                 #pragma omp parallel for schedule(static) collapse(2)
                 for (int il = 1; il <= nx; ++il) {
                     for (int jl = 1; jl <= ny; ++jl) {
@@ -414,26 +467,38 @@ public:
                         w.at(il, jl) = 0.0;
                     }
                 }
+                time_vector_ops += MPI_Wtime() - t0;
                 apply_D_inv(r, z);
+                t0 = MPI_Wtime();
                 #pragma omp parallel for schedule(static) collapse(2)
                 for (int il = 1; il <= nx; ++il)
                     for (int jl = 1; jl <= ny; ++jl)
                         p.at(il, jl) = z.at(il, jl);
-                rz_global = dot_product_global(z, r);
+                time_vector_ops += MPI_Wtime() - t0;
+                // rz_global = <z, r>
+                t0 = MPI_Wtime();
+                double rz_local_restart = dot_product_local(z, r);
+                time_local_reductions += MPI_Wtime() - t0;
+                t0 = MPI_Wtime();
+                MPI_Allreduce(&rz_local_restart, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+                time_mpi_allreduce += MPI_Wtime() - t0;
                 H_prev = H_curr;
                 continue;
             }
             H_prev = H_curr;
             
             double beta = rz_new / rz_global;
+            t0 = MPI_Wtime();
             #pragma omp parallel for schedule(static) collapse(2)
             for (int il = 1; il <= nx; ++il)
                 for (int jl = 1; jl <= ny; ++jl)
                     p.at(il, jl) = z.at(il, jl) + beta * p.at(il, jl);
+            time_vector_ops += MPI_Wtime() - t0;
             
             rz_global = rz_new;
             iters = k + 1;
         }
-        tsec = MPI_Wtime() - t0;
+        tsec = MPI_Wtime() - time_cg_start;
+        time_total += MPI_Wtime() - time_cg_start;
     }
 };
