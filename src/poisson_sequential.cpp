@@ -132,7 +132,8 @@ public:
     
     // Вычисление коэффициентов a, b, F
     void compute_coefficients() {
-        double t0 = MPI_Wtime();  // Начало измерения
+        auto t0 = chrono::high_resolution_clock::now();
+        // Начало измерения
         
         // Коэффициенты a[i][j] для i = 1..M, j = 1..N
         for (int i = 1; i <= M; ++i) {
@@ -195,7 +196,9 @@ public:
             }
         }
         
-        time_coefficients_init += MPI_Wtime() - t0;  // Конец измерения
+        auto t1 = chrono::high_resolution_clock::now();
+        time_coefficients_init += chrono::duration<double>(t1 - t0).count();
+        // Конец измерения
     }
     
     // Применение оператора A: Aw = result
@@ -258,7 +261,6 @@ public:
     
     // Метод сопряженных градиентов с предобуславливанием
     void solve_CG(vector<vector<double>>& w, double delta, int max_iter, int& iter_count, double& solve_time) {
-        double time_cg_start = MPI_Wtime();  // Начало общего таймера
         auto start_time = chrono::high_resolution_clock::now();
         
         // Инициализация
@@ -274,18 +276,21 @@ public:
         r = F;
         
         // Dz(0) = r(0)
-        double t0 = MPI_Wtime();
+        auto t0 = chrono::high_resolution_clock::now();
         apply_D_inv(r, z);
-        time_apply_D_inv += MPI_Wtime() - t0;
+        auto t1 = chrono::high_resolution_clock::now();
+        time_apply_D_inv += chrono::duration<double>(t1 - t0).count();
         
         // p(1) = z(0)
-        t0 = MPI_Wtime();
+        t0 = chrono::high_resolution_clock::now();
         p = z;
-        time_vector_ops += MPI_Wtime() - t0;
+        t1 = chrono::high_resolution_clock::now();
+        time_vector_ops += chrono::duration<double>(t1 - t0).count();
         
-        t0 = MPI_Wtime();
+        t0 = chrono::high_resolution_clock::now();
         double rz_old = dot_product(z, r);
-        time_reductions += MPI_Wtime() - t0;
+        t1 = chrono::high_resolution_clock::now();
+        time_reductions += chrono::duration<double>(t1 - t0).count();
         
         // Для контроля монотонности
         double H_prev = 0.0;
@@ -300,27 +305,30 @@ public:
         // Итерационный процесс
         for (int k = 0; k < max_iter; ++k) {
             // Ap = A * p
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             apply_A(p, Ap);
-            time_apply_A += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_apply_A += chrono::duration<double>(t1 - t0).count();
             
             // alpha = (z, r) / (Ap, p)
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             double alpha = rz_old / dot_product(Ap, p);
-            time_reductions += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_reductions += chrono::duration<double>(t1 - t0).count();
             
             // w(k+1) = w(k) + alpha * p
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             vector<vector<double>> w_new = w;
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
                     w_new[i][j] = w[i][j] + alpha * p[i][j];
                 }
             }
-            time_vector_ops += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_vector_ops += chrono::duration<double>(t1 - t0).count();
             
             // Проверка условия остановки
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             double diff_norm = 0.0;
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
@@ -329,35 +337,39 @@ public:
                 }
             }
             diff_norm = sqrt(diff_norm * h1 * h2);
-            time_reductions += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_reductions += chrono::duration<double>(t1 - t0).count();
             
             w = w_new;
             
             if (diff_norm < delta) {
                 iter_count = k + 1;
-                time_total += MPI_Wtime() - time_cg_start;  // Конец общего таймера
                 auto end_time = chrono::high_resolution_clock::now();
                 solve_time = chrono::duration<double>(end_time - start_time).count();
+                time_total += solve_time;
                 return;
             }
             
             // r(k+1) = r(k) - alpha * Ap
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
                     r[i][j] = r[i][j] - alpha * Ap[i][j];
                 }
             }
-            time_vector_ops += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_vector_ops += chrono::duration<double>(t1 - t0).count();
             
             // Dz(k+1) = r(k+1)
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             apply_D_inv(r, z);
-            time_apply_D_inv += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_apply_D_inv += chrono::duration<double>(t1 - t0).count();
             
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             double rz_new = dot_product(z, r);
-            time_reductions += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_reductions += chrono::duration<double>(t1 - t0).count();
             
             // Контроль монотонности H(w)
             double H_curr = 0.0;
@@ -392,21 +404,22 @@ public:
             double beta = rz_new / rz_old;
             
             // p(k+1) = z(k+1) + beta * p(k)
-            t0 = MPI_Wtime();
+            t0 = chrono::high_resolution_clock::now();
             for (int i = 0; i < M - 1; ++i) {
                 for (int j = 0; j < N - 1; ++j) {
                     p[i][j] = z[i][j] + beta * p[i][j];
                 }
             }
-            time_vector_ops += MPI_Wtime() - t0;
+            t1 = chrono::high_resolution_clock::now();
+            time_vector_ops += chrono::duration<double>(t1 - t0).count();
             
             rz_old = rz_new;
         }
         
-        time_total += MPI_Wtime() - time_cg_start;  // Конец общего таймера
         iter_count = max_iter;
         auto end_time = chrono::high_resolution_clock::now();
         solve_time = chrono::duration<double>(end_time - start_time).count();
+        time_total += solve_time;
     }
     
     // Сохранение решения в файл

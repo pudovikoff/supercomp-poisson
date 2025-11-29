@@ -301,6 +301,8 @@ public:
         time_apply_A += MPI_Wtime() - t0;
     }
     
+    void apply_D_inv(const Grid2D& R, Grid2D& Z) {
+        double t0 = MPI_Wtime();
         #pragma omp parallel for schedule(static) collapse(2)
         for (int il = 1; il <= nx; ++il)
             for (int jl = 1; jl <= ny; ++jl)
