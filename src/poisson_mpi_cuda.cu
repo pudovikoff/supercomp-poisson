@@ -103,75 +103,50 @@ __global__ void copy_flat_to_interior_kernel(const double* src_flat, double* dst
     }
 }
 
-// Обновление w_interior += alpha * p и вычисление ||alpha*p||^2 для проверки сходимости
+// Обновление w_interior += alpha * p и вычисление ||alpha*p||^2
+// Каждый блок независимо вычисляет свою частичную сумму diff_sq
+// БЕЗ shared memory и __syncthreads()
 __global__ void update_w_and_compute_diff_kernel(double* w_interior, const double* p,
                                                  double alpha, double* thread_diffs,
-                                                 int n, int num_blocks) {
-    int tid = threadIdx.x;
+                                                 int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int grid_size = blockDim.x * gridDim.x;
     
     double local_diff_sq = 0.0;
     
+    // Каждый поток обрабатывает свой диапазон элементов
     for (int i = idx; i < n; i += grid_size) {
         double inc = alpha * p[i];
         w_interior[i] += inc;
         local_diff_sq += inc * inc;
     }
     
-    __syncthreads();
-    
-    // Записываем результат каждой нити
-    double* thread_results = thread_diffs + blockIdx.x * blockDim.x;
-    thread_results[tid] = local_diff_sq;
-    
-    __syncthreads();
-    
-    // Первая нить блока суммирует
-    if (tid == 0) {
-        double block_sum = 0.0;
-        for (int i = 0; i < blockDim.x; i++) {
-            block_sum += thread_results[i];
+    // Каждый поток пишет СВОЮ частичную сумму в глобальную память
+    thread_diffs[blockIdx.x * blockDim.x + threadIdx.x] = local_diff_sq;
+}
+
+// Редукция: суммируем все элементы массива длиной num_elems (без shared memory)
+__global__ void reduce_blocks_kernel(const double* in, double* out, int num_elems) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        double sum = 0.0;
+        for (int i = 0; i < num_elems; i++) {
+            sum += in[i];
         }
-        thread_diffs[blockIdx.x] = block_sum;
+        *out = sum;
     }
 }
 
-// Скалярное произведение: этап 1 - каждый блок вычисляет частичную сумму
-// Используем только глобальную память (правило 10 запрещает shared memory для редукции)
+// Скалярное произведение: каждый поток пишет свою частичную сумму
 __global__ void dot_product_partial_kernel(const double* vec1, const double* vec2,
-                                           double* block_sums, int n) {
-    int tid = threadIdx.x;
+                                           double* thread_partials, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int grid_size = blockDim.x * gridDim.x;
     
-    double sum = 0.0;
-    
-    // Grid-stride loop для обработки больших массивов (из лекции - ILP)
+    double partial_sum = 0.0;
     for (int i = idx; i < n; i += grid_size) {
-        sum += vec1[i] * vec2[i];
+        partial_sum += vec1[i] * vec2[i];
     }
-    
-    // Последовательная редукция внутри блока через глобальную память
-    // Каждая нить записывает свой результат
-    // Только первая нить блока суммирует результаты всех нитей блока
-    __syncthreads();
-    
-    // Временный буфер в глобальной памяти для нитей блока
-    // Выделяется извне и передается как block_sums + blockIdx.x * blockDim.x
-    double* thread_results = block_sums + blockIdx.x * blockDim.x;
-    thread_results[tid] = sum;
-    
-    __syncthreads();
-    
-    // Первая нить суммирует результаты всех нитей блока
-    if (tid == 0) {
-        double block_sum = 0.0;
-        for (int i = 0; i < blockDim.x; i++) {
-            block_sum += thread_results[i];
-        }
-        block_sums[blockIdx.x] = block_sum;
-    }
+    thread_partials[blockIdx.x * blockDim.x + threadIdx.x] = partial_sum;
 }
 
 // ========== Функции запуска ядер ==========
@@ -222,12 +197,26 @@ void launch_copy_interior_from_device(double* ghost_dev, const double* flat_dev,
 }
 
 void launch_dot_product_partial(const double* vec1_dev, const double* vec2_dev,
-                               double* block_sums_dev, int n, 
+                               double* block_results_dev, int n, 
                                int num_blocks, int threads_per_block,
                                cudaStream_t stream) {
-    // Выделяем достаточно места: num_blocks * threads_per_block для промежуточных результатов
+    // Каждый блок пишет свой результат в блок_ресултс_дев
     dot_product_partial_kernel<<<num_blocks, threads_per_block, 0, stream>>>
-        (vec1_dev, vec2_dev, block_sums_dev, n);
+        (vec1_dev, vec2_dev, block_results_dev, n);
+}
+
+void launch_reduce_blocks(const double* in_dev, double* out_dev,
+                         int num_elems, cudaStream_t stream) {
+    // Одна нить суммирует весь массив
+    reduce_blocks_kernel<<<1, 1, 0, stream>>>(in_dev, out_dev, num_elems);
+}
+
+void launch_update_w_and_compute_diff(double* w_interior_dev, const double* p_dev,
+                                     double alpha, double* thread_diffs_dev,
+                                     int n_interior, int num_blocks, int threads_per_block,
+                                     cudaStream_t stream) {
+    update_w_and_compute_diff_kernel<<<num_blocks, threads_per_block, 0, stream>>>
+        (w_interior_dev, p_dev, alpha, thread_diffs_dev, n_interior);
 }
 
 // ========== Реализация класса PoissonSolverMPICUDA ==========
@@ -273,12 +262,13 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     time_mpi_exchange = 0.0;
     time_mpi_allreduce = 0.0;
     time_cpu_reductions = 0.0;
+    time_gpu_p2p = 0.0;
     
     // Выбор GPU устройства по номеру MPI ранга
-    int num_devices = 0;
     CUDA_CHECK(cudaGetDeviceCount(&num_devices));
-    int device_id = world_rank % num_devices;
+    device_id = world_rank % num_devices;
     CUDA_CHECK(cudaSetDevice(device_id));
+    p2p_buffer_dev = nullptr;  // Одновременные результаты P2P, аллоцируются при необходимости
     
     // Создание CUDA events
     CUDA_CHECK(cudaEventCreate(&event_start));
@@ -311,6 +301,7 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(Ddiag_dev));
     CUDA_CHECK(cudaFree(F_dev));
     CUDA_CHECK(cudaFree(reduction_buffer_dev));
+    if (p2p_buffer_dev) CUDA_CHECK(cudaFree(p2p_buffer_dev));
     free(reduction_buffer_host);  // Обычный free вместо cudaFreeHost
     
     CUDA_CHECK(cudaEventDestroy(event_start));
@@ -480,25 +471,21 @@ double PoissonSolverMPICUDA::dot_product_cpu(const double* vec1, const double* v
 }
 
 double PoissonSolverMPICUDA::dot_product_gpu(const double* vec1_dev, const double* vec2_dev, int n) {
-    // Запуск GPU kernel для частичных сумм
+    // Этап 1: Каждый поток пишет свою частичную сумму (num_blocks * threads_per_block элементов)
     launch_dot_product_partial(vec1_dev, vec2_dev, reduction_buffer_dev, n,
                               num_reduction_blocks, reduction_threads_per_block, 0);
     
-    // Копируем только num_reduction_blocks элементов (вместо nx*ny)
+    // Этап 2: Одна нить на GPU суммирует все элементы
+    int num_elems = num_reduction_blocks * reduction_threads_per_block;
+    launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems, 0);
+    
+    // Копируем результат (1 элемент)
     double t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
-                         num_reduction_blocks * sizeof(double), cudaMemcpyDeviceToHost));
+                         sizeof(double), cudaMemcpyDeviceToHost));
     time_gpu_to_cpu += MPI_Wtime() - t0;
     
-    // Финальная редукция на CPU
-    t0 = MPI_Wtime();
-    double sum = 0.0;
-    for (int i = 0; i < num_reduction_blocks; i++) {
-        sum += reduction_buffer_host[i];
-    }
-    time_cpu_reductions += MPI_Wtime() - t0;
-    
-    return sum * h1 * h2;
+    return reduction_buffer_host[0] * h1 * h2;
 }
 
 double PoissonSolverMPICUDA::max_norm_cpu(const double* vec, int n) {
@@ -604,21 +591,21 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         double alpha = rz_global / denom;
         
         // w_interior += alpha * p и вычисление ||alpha*p||^2 на GPU
-        update_w_and_compute_diff_kernel<<<num_reduction_blocks, reduction_threads_per_block>>>
-            (w_interior_dev, p_dev, alpha, reduction_buffer_dev, n_interior, num_reduction_blocks);
+        // Каждый блок независимо вычисляет свою частичную сумму
+        launch_update_w_and_compute_diff(w_interior_dev, p_dev, alpha, reduction_buffer_dev,
+                                         n_interior, num_reduction_blocks, reduction_threads_per_block, 0);
         
-        // Копируем частичные суммы diff
+        // Финальная редукция на GPU: суммируем все (num_blocks * threads_per_block) частичных результатов
+        int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
+        launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
+        
+        // Копируем результат (1 элемент)
         t0 = MPI_Wtime();
         CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
-                             num_reduction_blocks * sizeof(double), cudaMemcpyDeviceToHost));
+                             sizeof(double), cudaMemcpyDeviceToHost));
         time_gpu_to_cpu += MPI_Wtime() - t0;
         
-        t0 = MPI_Wtime();
-        double diff_sq_local = 0.0;
-        for (int i = 0; i < num_reduction_blocks; i++) {
-            diff_sq_local += reduction_buffer_host[i];
-        }
-        time_cpu_reductions += MPI_Wtime() - t0;
+        double diff_sq_local = reduction_buffer_host[0];
         
         double diff_sq = 0.0;
         t0 = MPI_Wtime();

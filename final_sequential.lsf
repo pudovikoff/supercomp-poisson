@@ -22,7 +22,7 @@ fi
 
 # Run solver
 echo "Running sequential version with M=2000, N=3200..."
-time ./bin/poisson_sequential --M 2000 --N 3200 --delta 1e-6 --max_iter 200000
+time ./bin/poisson_sequential --M 2000 --N 3200
 
 echo ""
 echo "End time: $(date)"

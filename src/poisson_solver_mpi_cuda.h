@@ -124,6 +124,12 @@ public:
     double time_mpi_exchange;
     double time_mpi_allreduce;
     double time_cpu_reductions;
+    double time_gpu_p2p;  // P2P обмен между GPU (если несколько GPU)
+    
+    // Поддержка multi-GPU P2P
+    int num_devices;
+    int device_id;
+    double* p2p_buffer_dev;  // Буфер для P2P обмена результатов редукции
     
     // CUDA events для измерения
     cudaEvent_t event_start, event_stop;
@@ -192,6 +198,14 @@ void launch_copy_interior_from_device(double* w_host, const double* w_dev,
                                      int nx, int ny, cudaStream_t stream);
 
 void launch_dot_product_partial(const double* vec1_dev, const double* vec2_dev,
-                               double* block_sums_dev, int n,
+                               double* block_results_dev, int n,
                                int num_blocks, int threads_per_block,
                                cudaStream_t stream);
+
+void launch_reduce_blocks(const double* in_dev, double* out_dev,
+                         int num_elems, cudaStream_t stream);
+
+void launch_update_w_and_compute_diff(double* w_interior_dev, const double* p_dev,
+                                     double alpha, double* thread_diffs_dev,
+                                     int n_interior, int num_blocks, int threads_per_block,
+                                     cudaStream_t stream);
