@@ -372,48 +372,35 @@ src/
 - Так как нельзя пользоваться shared memory, то пользовался глобальной памятью, редукцией на CPU и P2P обменом для GPU.
 - В решение использовал самый простой вариант - с блокирующими операциями (```MPI_Sendrecv(), cudaMemcpy()```)
 
-<!-- 2 GPU:
-
-=== MPI+CUDA Poisson Solver ===
-MPI grid: 1 x 2 (procs=2)
-Global grid: 2000 x 3200
-Iterations: 2641
-Total time: 34.602038 s
+<!-- 2 GPU: Iterations: 2641
+Total time: 18.731347 s
 ||w||_E = 1.438477e-01, ||w||_C = 1.494813e-01
 
 === Detailed timings ===
-GPU initialization:  1.341532 s
-apply_A kernels:     1.388934 s
-apply_D_inv kernels: 0.988526 s
-Vector ops kernels:  0.798107 s
-GPU->CPU copies:     22.154087 s
-CPU->GPU copies:     5.897290 s
-MPI exchange:        1.696495 s
-MPI allreduce:       0.412283 s
+GPU initialization:  1.038036 s
+apply_A kernels:     0.699180 s
+apply_D_inv kernels: 0.339733 s
+Vector ops kernels:  0.406680 s
+GPU->CPU copies:     12.330235 s
+CPU->GPU copies:     0.126194 s
+MPI exchange:        0.514256 s
+MPI allreduce:       3.684334 s
 CPU reductions:      0.000000 s
-
-=== Job completed ===
-
-1 GPU:
-=== MPI+CUDA Poisson Solver ===
-MPI grid: 1 x 2 (procs=2)
-Global grid: 2000 x 3200
-Iterations: 2641
-Total time: 89.415588 s
+1 GPU: Iterations: 2641
+Total time: 23.390093 s
 ||w||_E = 1.438477e-01, ||w||_C = 1.494813e-01
 
 === Detailed timings ===
-GPU initialization:  7.038275 s
-apply_A kernels:     1.638307 s
-apply_D_inv kernels: 1.671086 s
-Vector ops kernels:  1.424233 s
-GPU->CPU copies:     47.668998 s
-CPU->GPU copies:     26.807661 s
-MPI exchange:        5.190720 s
-MPI allreduce:       2.623458 s
+GPU initialization:  1.986904 s
+apply_A kernels:     1.353402 s
+apply_D_inv kernels: 0.765263 s
+Vector ops kernels:  0.812786 s
+GPU->CPU copies:     12.868332 s
+CPU->GPU copies:     0.182320 s
+MPI exchange:        1.089756 s
+MPI allreduce:       5.325507 s
 CPU reductions:      0.000000 s
 
-=== Job completed ===
 
 OpenMP:
 === Timing Breakdown ===
@@ -476,15 +463,7 @@ Total time (solve):   45.816858 s
 | 2000 × 3200, 1 GPU        | 2641       | 89.415588  | 1.438e-01 | 1.495e-01   |   
 | 2000 × 3200, 2 GPU        | 2641       | 34.602038   | 1.438e-01 | 1.495e-01   |  
 
-GPU initialization:  2.176980 s
-apply_A kernels:     3.230474 s
-apply_D_inv kernels: 2.209372 s
-Vector ops kernels:  3.235461 s
-GPU->CPU copies:     35.629542 s
-CPU->GPU copies:     8.812231 s
-MPI exchange:        1.668794 s
-MPI allreduce:       0.010904 s
-CPU reductions:      0.000000 s
+
 
 -->
 
@@ -495,8 +474,9 @@ CPU reductions:      0.000000 s
 | 2000 × 3200, 16 × 8 threads OpenMP | 2618 | 70.43 | 1.327e-01 | 1.412e-01 | - | 45.199635 | 9.909228 | 8.620510 | - | - | - | - | - | 0.087129 | 6.635815 |
 | 2000 × 3200, 20 MPI | 2641 | 45.816858 | 1.438e-01 | 1.438e-01 | - | 23.247202 | 3.482127 | 9.896023 | - | - | 0.127331 | 4.398595 | 4.654696 | 0.044712 | - |
 | 2000 × 3200, 10 MPI × 16 threads | 2641 | 47.310990 | 1.438e-01 | 1.412e-01 | - | - | - | - | - | - | - | - | - | - | MPI |
-| 2000 × 3200, 1 GPU | 2641 | 45.761981 | 1.438e-01 | 1.495e-01 | 2.213476 | 2.846720 | 2.213947 | 1.493156 | 26.413652 | 9.116692 | 1.627453 | 0.011930 | 0.000000 | - | - |
-| 2000 × 3200, 2 GPU | 2641 | 34.602038 | 1.438e-01 | 1.495e-01 | 2.176980 | 1.388934 | 0.988526 | 0.798107 | 22.154087 | 5.897290 | 1.696495 | 0.412283 | 0.000000 | - | - |
+| 2000 × 3200, 1 GPU | 2641 | 23.390093 | 1.438e-01 | 1.495e-01 | 1.986904 | 1.353402 | 0.765263 | 0.812786 | 12.868332 | 0.182320 | 1.089756 | 5.325507 | 0.000000 | - | - |
+| 2000 × 3200, 2 GPU | 2641 | 18.731347 | 1.438e-01 | 1.495e-01 | 1.038036 | 0.699180 | 0.339733 | 0.406680 | 12.330235 | 0.126194 | 0.514256 | 3.684334 | 0.000000 | - | - |
+
 
 
 Так как нормы решений совпадают и алгоритмы сходятся, то есть все основания считать, что предложенные реализации алгоритмов работают.
@@ -511,7 +491,7 @@ CPU reductions:      0.000000 s
 
 Это может быть связано с дополнительными расходами на обмены между ГПУ, а так же не стабильной операцией копирования.  
 
-Время на копировании GPU --> CPU и обратно довольно большое, но уже данное решение позволяет опередить остальные версии.
+Время на копировании GPU --> CPU и обратно довольно большое, но текущая версия решение позволяет значительно опередить остальные версии.
 
 ---
 
