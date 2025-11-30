@@ -375,6 +375,10 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     free(boundary_bottom_host);
     free(boundary_left_host);
     free(boundary_right_host);
+    free(boundary_top_recv);
+    free(boundary_bottom_recv);
+    free(boundary_left_recv);
+    free(boundary_right_recv);
     
     free(reduction_buffer_host);  // Обычный free вместо cudaFreeHost
     
@@ -464,11 +468,17 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
         exit(EXIT_FAILURE);
     }
     
-    // Гост буферы для граничных полос
+    // Гост буферы для граничных полос (send)
     boundary_top_host = (double*)malloc(ny * sizeof(double));
     boundary_bottom_host = (double*)malloc(ny * sizeof(double));
     boundary_left_host = (double*)malloc(nx * sizeof(double));
     boundary_right_host = (double*)malloc(nx * sizeof(double));
+    
+    // Временные receive буферы (MPI обмен)
+    boundary_top_recv = (double*)malloc(ny * sizeof(double));
+    boundary_bottom_recv = (double*)malloc(ny * sizeof(double));
+    boundary_left_recv = (double*)malloc(nx * sizeof(double));
+    boundary_right_recv = (double*)malloc(nx * sizeof(double));
     
     // GPU буферы для граничных полос
     CUDA_CHECK(cudaMalloc(&boundary_top_dev, ny * sizeof(double)));
@@ -554,26 +564,37 @@ void PoissonSolverMPICUDA::exchange_gpu_optimized() {
     MPI_Status st;
     
     // Обмен вдоль Y (горизонтальные границы: top/bottom)
-    // Граница top содержит ny элементов (строка с ny колонок)
-    // Отправляем top соседу вниз, получаем от соседа вверху -> top
-    // Отправляем bottom соседу вверх, получаем от соседа вниз -> bottom
+    // Отправляем boundary_top_host соседу вниз, получаем от соседа вверху в boundary_top_recv
     MPI_Sendrecv(boundary_top_host, ny, MPI_DOUBLE, nbr_down, 100,
-                 boundary_top_host, ny, MPI_DOUBLE, nbr_up, 100,
+                 boundary_top_recv, ny, MPI_DOUBLE, nbr_up, 100,
                  cart_comm, &st);
+    // Копируем полученное значение назад в boundary_top_host (ghost линия from upper neighbor)
+    if (nbr_up != MPI_PROC_NULL) {
+        memcpy(boundary_top_host, boundary_top_recv, ny * sizeof(double));
+    }
     
+    // Отправляем boundary_bottom_host соседу вверх, получаем от соседа вниз
     MPI_Sendrecv(boundary_bottom_host, ny, MPI_DOUBLE, nbr_up, 101,
-                 boundary_bottom_host, ny, MPI_DOUBLE, nbr_down, 101,
+                 boundary_bottom_recv, ny, MPI_DOUBLE, nbr_down, 101,
                  cart_comm, &st);
+    if (nbr_down != MPI_PROC_NULL) {
+        memcpy(boundary_bottom_host, boundary_bottom_recv, ny * sizeof(double));
+    }
     
     // Обмен вдоль X (вертикальные границы: left/right)
-    // Граница left содержит nx элементов (столбец с nx строк)
     MPI_Sendrecv(boundary_left_host, nx, MPI_DOUBLE, nbr_left, 102,
-                 boundary_left_host, nx, MPI_DOUBLE, nbr_right, 102,
+                 boundary_left_recv, nx, MPI_DOUBLE, nbr_right, 102,
                  cart_comm, &st);
+    if (nbr_right != MPI_PROC_NULL) {
+        memcpy(boundary_left_host, boundary_left_recv, nx * sizeof(double));
+    }
     
     MPI_Sendrecv(boundary_right_host, nx, MPI_DOUBLE, nbr_right, 103,
-                 boundary_right_host, nx, MPI_DOUBLE, nbr_left, 103,
+                 boundary_right_recv, nx, MPI_DOUBLE, nbr_left, 103,
                  cart_comm, &st);
+    if (nbr_left != MPI_PROC_NULL) {
+        memcpy(boundary_right_host, boundary_right_recv, nx * sizeof(double));
+    }
     
     time_mpi_exchange += MPI_Wtime() - t0;
 }

@@ -111,9 +111,12 @@ public:
     // GPU буферы для граничных полос (оптимизация копирований)
     double *boundary_top_dev, *boundary_bottom_dev;     // ny элементов
     double *boundary_left_dev, *boundary_right_dev;     // nx элементов
-    // Хост буферы для граничных полос
+    // Хост буферы для граничных полос (send)
     double *boundary_top_host, *boundary_bottom_host;
     double *boundary_left_host, *boundary_right_host;
+    // Временные буферы для receive (MPI обмен)
+    double *boundary_top_recv, *boundary_bottom_recv;
+    double *boundary_left_recv, *boundary_right_recv;
     
     // Буферы для GPU-редукций
     double *reduction_buffer_dev;  // Для промежуточных сумм
