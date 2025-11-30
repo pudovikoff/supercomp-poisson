@@ -74,7 +74,7 @@ struct Grid2D {
         return data[(i)*(ny+2) + j]; 
     }
     
-    inline const double& at(int i, int j) const { 
+    inline double& at(int i, int j) { 
         return data[(i)*(ny+2) + j]; 
     }
 };

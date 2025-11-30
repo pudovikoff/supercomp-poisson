@@ -13,7 +13,7 @@ NVCCFLAGS = -arch=$(ARCH) -ccbin=$(HOST_COMP) -std=c++11 -Xcompiler -fPIC
 NVCCLINKFLAGS = -lstdc++ -lm
 
 # Модуль загрузки MPI (для HPC кластера)
-MODULE_LOAD_MPI ?= module load SpectrumMPI 2>/dev/null ;
+MODULE_LOAD_MPI ?= module load SpectrumMPI ;
 
 # Флаги OpenMP для разных компиляторов
 # IBM XL C/C++: xlc_r, xlC_r, xlC
@@ -42,9 +42,6 @@ MPI_BIN = $(BIN_DIR)/poisson_mpi
 MPI_OMP_BIN = $(BIN_DIR)/poisson_mpi_omp
 MPI_CUDA_BIN = $(BIN_DIR)/poisson_mpi_cuda
 
-# Тесты
-TEST_DECOMP_SRC = $(TESTS_DIR)/test_domain_decomposition.cpp
-TEST_DECOMP_BIN = $(BIN_DIR)/test_domain_decomposition
 
 # Цели сборки
 # По умолчанию собираем всё
@@ -86,37 +83,12 @@ $(MPI_OMP_BIN): $(MPI_OMP_SRC) $(SRC_DIR)/poisson_solver_mpi_omp.h $(SRC_DIR)/do
 $(MPI_CUDA_BIN): $(MPI_CUDA_SRC) $(SRC_DIR)/poisson_solver_mpi_cuda.h $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
 	$(MODULE_LOAD_MPI) $(NVCC) $(NVCCFLAGS) -I$(SRC_DIR) $(NVCCLINKFLAGS) -o $@ $(MPI_CUDA_SRC)
 
-$(TEST_DECOMP_BIN): $(TEST_DECOMP_SRC) $(SRC_DIR)/domain_decomposition.h | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS_BASE) -o $@ $(TEST_DECOMP_SRC)
-
 clean:
 	rm -f $(SEQ_BIN) $(OMP_BIN) $(MPI_BIN) $(MPI_OMP_BIN) $(MPI_CUDA_BIN) $(TEST_DECOMP_BIN)
 	rm -f $(RESULTS_DIR)/solution_*.txt
 
-run_seq: $(SEQ_BIN) | $(RESULTS_DIR)
-	$<
 
-# Пример: make run_omp M=40 N=40 THREADS=4
-run_omp: $(OMP_BIN) | $(RESULTS_DIR)
-	OMP_NUM_THREADS=$(THREADS) $< --M $(M) --N $(N)
-
-# Пример: make run_mpi NP=4 M=40 N=40
-run_mpi: $(MPI_BIN) | $(RESULTS_DIR)
-	$(MODULE_LOAD_MPI) mpirun -np $(NP) $< --M $(M) --N $(N)
-
-# Пример: make run_mpi_omp NP=2 M=40 N=40 THREADS=4
-run_mpi_omp: $(MPI_OMP_BIN) | $(RESULTS_DIR)
-	$(MODULE_LOAD_MPI) mpirun -np $(NP) $< --M $(M) --N $(N) --threads $(THREADS)
-
-# Пример: make run_mpi_cuda NP=4 M=400 N=400
-run_mpi_cuda: $(MPI_CUDA_BIN) | $(RESULTS_DIR)
-	$(MODULE_LOAD_MPI) mpirun -np $(NP) $< --M $(M) --N $(N)
-
-# Локальный тест разбиения
-test_decomp: $(TEST_DECOMP_BIN)
-	$<
-
-.PHONY: all mpi omp seq mpi_omp mpi_cuda clean run_seq run_omp run_mpi run_mpi_omp run_mpi_cuda test_decomp help
+.PHONY: all mpi omp seq mpi_omp mpi_cuda clean help
 
 # Справка
 help:
@@ -132,16 +104,9 @@ help:
 	@echo "  make mpi_omp    - собрать гибридную MPI+OpenMP версию"
 	@echo "  make mpi_cuda   - собрать MPI+CUDA версию (ARCH=sm_35 HOST_COMP=mpicxx)"
 	@echo ""
-	@echo "Запуск:"
-	@echo "  make run_mpi NP=4 M=40 N=40                - запустить MPI версию"
-	@echo "  make run_omp M=40 N=40 THREADS=4           - запустить OpenMP версию"
-	@echo "  make run_mpi_omp NP=2 M=40 N=40 THREADS=4  - запустить MPI+OpenMP версию"
-	@echo "  make run_mpi_cuda NP=4 M=400 N=400         - запустить MPI+CUDA версию"
-	@echo ""
 	@echo "Примечание:"
 	@echo "  - MPI версии используют mpicxx (автоматическая линковка библиотек)"
 	@echo "  - Модуль SpectrumMPI загружается автоматически перед компиляцией"
-	@echo "  - На локальной машине: make mpi (игнорирует module load если недоступен)"
 	@echo "  - На кластере (Polus): make mpi (загружает SpectrumMPI автоматически)"
 	@echo ""
 	@echo "Прочее:"
