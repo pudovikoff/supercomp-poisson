@@ -109,14 +109,14 @@ public:
     double *a_face_x_dev, *b_face_y_dev, *Ddiag_dev, *F_dev;
     
     // GPU буферы для граничных полос (оптимизация копирований)
-    double *boundary_top_dev, *boundary_bottom_dev;     // ny элементов
-    double *boundary_left_dev, *boundary_right_dev;     // nx элементов
+    double *boundary_top_dev, *boundary_bottom_dev;     // nx элементов (горизонтальные границы)
+    double *boundary_left_dev, *boundary_right_dev;     // ny элементов (вертикальные границы)
     // Хост буферы для граничных полос (send)
-    double *boundary_top_host, *boundary_bottom_host;
-    double *boundary_left_host, *boundary_right_host;
+    double *boundary_top_host, *boundary_bottom_host;   // nx элементов
+    double *boundary_left_host, *boundary_right_host;   // ny элементов
     // Временные буферы для receive (MPI обмен)
-    double *boundary_top_recv, *boundary_bottom_recv;
-    double *boundary_left_recv, *boundary_right_recv;
+    double *boundary_top_recv, *boundary_bottom_recv;   // nx элементов
+    double *boundary_left_recv, *boundary_right_recv;   // ny элементов
     
     // Буферы для GPU-редукций
     double *reduction_buffer_dev;  // Для промежуточных сумм
