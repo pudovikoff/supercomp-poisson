@@ -554,18 +554,23 @@ void PoissonSolverMPICUDA::exchange_gpu_optimized() {
     MPI_Status st;
     
     // Обмен вдоль Y (горизонтальные границы: top/bottom)
-    MPI_Sendrecv(boundary_top_host, nx, MPI_DOUBLE, nbr_down, 100,
+    // Граница top содержит ny элементов (строка с ny колонок)
+    // Отправляем top соседу вниз, получаем от соседа вверху -> top
+    // Отправляем bottom соседу вверх, получаем от соседа вниз -> bottom
+    MPI_Sendrecv(boundary_top_host, ny, MPI_DOUBLE, nbr_down, 100,
                  boundary_top_host, ny, MPI_DOUBLE, nbr_up, 100,
                  cart_comm, &st);
-    // Для bottom
+    
     MPI_Sendrecv(boundary_bottom_host, ny, MPI_DOUBLE, nbr_up, 101,
                  boundary_bottom_host, ny, MPI_DOUBLE, nbr_down, 101,
                  cart_comm, &st);
     
     // Обмен вдоль X (вертикальные границы: left/right)
+    // Граница left содержит nx элементов (столбец с nx строк)
     MPI_Sendrecv(boundary_left_host, nx, MPI_DOUBLE, nbr_left, 102,
                  boundary_left_host, nx, MPI_DOUBLE, nbr_right, 102,
                  cart_comm, &st);
+    
     MPI_Sendrecv(boundary_right_host, nx, MPI_DOUBLE, nbr_right, 103,
                  boundary_right_host, nx, MPI_DOUBLE, nbr_left, 103,
                  cart_comm, &st);
