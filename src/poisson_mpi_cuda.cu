@@ -149,62 +149,6 @@ __global__ void dot_product_partial_kernel(const double* vec1, const double* vec
     thread_partials[blockIdx.x * blockDim.x + threadIdx.x] = partial_sum;
 }
 
-// Экстракт границы из w_dev: копируем ТОЛЬКО внутренние узлы для отправки соседям
-// send_down/send_up: nx элементов (для каждого il в [1..nx], берем одну ячейку jl=1 или jl=ny)
-// send_left/send_right: ny элементов (для каждого jl в [1..ny], берем одну ячейку il=1 или il=nx)
-__global__ void extract_boundaries_kernel(const double* w,
-                                         double* send_down, double* send_up,
-                                         double* send_left, double* send_right,
-                                         int nx, int ny) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // Горизонтальные границы (Y-направление): nx элементов для каждой
-    if (idx < nx) {
-        int il = idx + 1;  // il идет от 1 до nx
-        // Отправляем соседу вниз (down): берем из jl=1
-        send_down[idx] = w[il * (ny+2) + 1];
-        // Отправляем соседу вверх (up): берем из jl=ny
-        send_up[idx] = w[il * (ny+2) + ny];
-    }
-    
-    // Вертикальные границы (X-направление): ny элементов для каждой
-    if (idx < ny) {
-        int jl = idx + 1;  // jl идет от 1 до ny
-        // Отправляем соседу влево (left): берем из il=1
-        send_left[idx] = w[1 * (ny+2) + jl];
-        // Отправляем соседу вправо (right): берем из il=nx
-        send_right[idx] = w[nx * (ny+2) + jl];
-    }
-}
-
-// Inject границы: записываем полученные от соседей значения в ghost слои w_dev
-// recv_down/recv_up: nx элементов (записываем в ghost слои jl=0 и jl=ny+1)
-// recv_left/recv_right: ny элементов (записываем в ghost слои il=0 и il=nx+1)
-__global__ void inject_boundaries_kernel(double* w,
-                                        const double* recv_down, const double* recv_up,
-                                        const double* recv_left, const double* recv_right,
-                                        int nx, int ny) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // Горизонтальные ghost слои: nx элементов
-    if (idx < nx) {
-        int il = idx + 1;  // il идет от 1 до nx
-        // От соседа снизу (down): записываем в ghost слой jl=0
-        w[il * (ny+2) + 0] = recv_down[idx];
-        // От соседа сверху (up): записываем в ghost слой jl=ny+1
-        w[il * (ny+2) + (ny+1)] = recv_up[idx];
-    }
-    
-    // Вертикальные ghost слои: ny элементов
-    if (idx < ny) {
-        int jl = idx + 1;  // jl идет от 1 до ny
-        // От соседа слева (left): записываем в ghost слой il=0
-        w[0 * (ny+2) + jl] = recv_left[idx];
-        // От соседа справа (right): записываем в ghost слой il=nx+1
-        w[(nx+1) * (ny+2) + jl] = recv_right[idx];
-    }
-}
-
 // ========== Функции запуска ядер ==========
 
 void launch_apply_A_kernel(const double* p_dev, double* Ap_dev,
@@ -273,26 +217,6 @@ void launch_update_w_and_compute_diff(double* w_interior_dev, const double* p_de
                                      cudaStream_t stream) {
     update_w_and_compute_diff_kernel<<<num_blocks, threads_per_block, 0, stream>>>
         (w_interior_dev, p_dev, alpha, thread_diffs_dev, n_interior);
-}
-
-void launch_extract_boundaries(const double* w_dev,
-                              double* boundary_top, double* boundary_bottom,
-                              double* boundary_left, double* boundary_right,
-                              int nx, int ny, cudaStream_t stream) {
-    int threads = 256;
-    int blocks = (max(nx, ny) + threads - 1) / threads;
-    extract_boundaries_kernel<<<blocks, threads, 0, stream>>>
-        (w_dev, boundary_top, boundary_bottom, boundary_left, boundary_right, nx, ny);
-}
-
-void launch_inject_boundaries(double* w_dev,
-                             const double* boundary_top, const double* boundary_bottom,
-                             const double* boundary_left, const double* boundary_right,
-                             int nx, int ny, cudaStream_t stream) {
-    int threads = 256;
-    int blocks = (max(nx, ny) + threads - 1) / threads;
-    inject_boundaries_kernel<<<blocks, threads, 0, stream>>>
-        (w_dev, boundary_top, boundary_bottom, boundary_left, boundary_right, nx, ny);
 }
 
 // ========== Реализация класса PoissonSolverMPICUDA ==========
@@ -378,21 +302,6 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(F_dev));
     CUDA_CHECK(cudaFree(reduction_buffer_dev));
     if (p2p_buffer_dev) CUDA_CHECK(cudaFree(p2p_buffer_dev));
-    
-    // Освобождение граничных буферов
-    CUDA_CHECK(cudaFree(boundary_top_dev));
-    CUDA_CHECK(cudaFree(boundary_bottom_dev));
-    CUDA_CHECK(cudaFree(boundary_left_dev));
-    CUDA_CHECK(cudaFree(boundary_right_dev));
-    free(boundary_top_host);
-    free(boundary_bottom_host);
-    free(boundary_left_host);
-    free(boundary_right_host);
-    free(boundary_top_recv);
-    free(boundary_bottom_recv);
-    free(boundary_left_recv);
-    free(boundary_right_recv);
-    
     free(reduction_buffer_host);  // Обычный free вместо cudaFreeHost
     
     CUDA_CHECK(cudaEventDestroy(event_start));
@@ -480,26 +389,6 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
         fprintf(stderr, "Failed to allocate reduction_buffer_host\n");
         exit(EXIT_FAILURE);
     }
-    
-    // Гост буферы для граничных полос (send)
-    // boundary_top/bottom: nx элементов (горизонтальные границы)
-    // boundary_left/right: ny элементов (вертикальные границы)
-    boundary_top_host = (double*)malloc(nx * sizeof(double));
-    boundary_bottom_host = (double*)malloc(nx * sizeof(double));
-    boundary_left_host = (double*)malloc(ny * sizeof(double));
-    boundary_right_host = (double*)malloc(ny * sizeof(double));
-    
-    // Временные receive буферы (MPI обмен)
-    boundary_top_recv = (double*)malloc(nx * sizeof(double));
-    boundary_bottom_recv = (double*)malloc(nx * sizeof(double));
-    boundary_left_recv = (double*)malloc(ny * sizeof(double));
-    boundary_right_recv = (double*)malloc(ny * sizeof(double));
-    
-    // GPU буферы для граничных полос
-    CUDA_CHECK(cudaMalloc(&boundary_top_dev, nx * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&boundary_bottom_dev, nx * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&boundary_left_dev, ny * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&boundary_right_dev, ny * sizeof(double)));
 }
 
 void PoissonSolverMPICUDA::copy_coefficients_to_device() {
@@ -569,57 +458,6 @@ void PoissonSolverMPICUDA::exchange_gpu(Grid2D& U) {
         for (int jl = 1; jl <= ny; ++jl) U.at(0, jl) = recv_left[jl - 1];
     else
         for (int jl = 1; jl <= ny; ++jl) U.at(0, jl) = 0.0;
-    
-    time_mpi_exchange += MPI_Wtime() - t0;
-}
-
-void PoissonSolverMPICUDA::exchange_gpu_optimized() {
-    double t0 = MPI_Wtime();
-    
-    MPI_Status st;
-    
-    // Обмен вдоль Y (горизонтальные границы): nx элементов каждая
-    // boundary_bottom (из jl=1) -> отправляем nbr_down, получаем от nbr_down в jl=0
-    MPI_Sendrecv(boundary_bottom_host, nx, MPI_DOUBLE, nbr_down, 100,
-                 boundary_bottom_recv, nx, MPI_DOUBLE, nbr_down, 100,
-                 cart_comm, &st);
-    if (nbr_down != MPI_PROC_NULL) {
-        memcpy(boundary_bottom_host, boundary_bottom_recv, nx * sizeof(double));
-    } else {
-        // Граничное условие: обнуляем ghost слой
-        memset(boundary_bottom_host, 0, nx * sizeof(double));
-    }
-    
-    // boundary_top (из jl=ny) -> отправляем nbr_up, получаем от nbr_up в jl=ny+1
-    MPI_Sendrecv(boundary_top_host, nx, MPI_DOUBLE, nbr_up, 101,
-                 boundary_top_recv, nx, MPI_DOUBLE, nbr_up, 101,
-                 cart_comm, &st);
-    if (nbr_up != MPI_PROC_NULL) {
-        memcpy(boundary_top_host, boundary_top_recv, nx * sizeof(double));
-    } else {
-        memset(boundary_top_host, 0, nx * sizeof(double));
-    }
-    
-    // Обмен вдоль X (вертикальные границы): ny элементов каждая
-    // boundary_left (из il=1) -> отправляем nbr_left, получаем от nbr_left в il=0
-    MPI_Sendrecv(boundary_left_host, ny, MPI_DOUBLE, nbr_left, 102,
-                 boundary_left_recv, ny, MPI_DOUBLE, nbr_left, 102,
-                 cart_comm, &st);
-    if (nbr_left != MPI_PROC_NULL) {
-        memcpy(boundary_left_host, boundary_left_recv, ny * sizeof(double));
-    } else {
-        memset(boundary_left_host, 0, ny * sizeof(double));
-    }
-    
-    // boundary_right (из il=nx) -> отправляем nbr_right, получаем от nbr_right в il=nx+1
-    MPI_Sendrecv(boundary_right_host, ny, MPI_DOUBLE, nbr_right, 103,
-                 boundary_right_recv, ny, MPI_DOUBLE, nbr_right, 103,
-                 cart_comm, &st);
-    if (nbr_right != MPI_PROC_NULL) {
-        memcpy(boundary_right_host, boundary_right_recv, ny * sizeof(double));
-    } else {
-        memset(boundary_right_host, 0, ny * sizeof(double));
-    }
     
     time_mpi_exchange += MPI_Wtime() - t0;
 }
@@ -723,45 +561,15 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
         CUDA_CHECK(cudaDeviceSynchronize());
         
-        // ОПТ: Экстракт границы из GPU в маленькие буферы, а не всё в драм
+        // Обмен граничных значений для p (через CPU)
         t0 = MPI_Wtime();
-        // ПОРЯДОК: send_down (jl=1), send_up (jl=ny), send_left (il=1), send_right (il=nx)
-        // boundary_bottom = send_down (jl=1) -> отправляем nbr_down
-        // boundary_top = send_up (jl=ny) -> отправляем nbr_up
-        launch_extract_boundaries(w_dev, boundary_bottom_dev, boundary_top_dev,
-                                 boundary_left_dev, boundary_right_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
         time_gpu_to_cpu += MPI_Wtime() - t0;
         
-        // Копируем только 4 маленьких буфера границ: O(nx+ny) вместо O(nx*ny)
-        // boundary_top: отправляем nbr_up, получаем от nbr_up
-        // boundary_bottom: отправляем nbr_down, получаем от nbr_down
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(boundary_bottom_host, boundary_bottom_dev, nx * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_top_host, boundary_top_dev, nx * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_left_host, boundary_left_dev, ny * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_right_host, boundary_right_dev, ny * sizeof(double), cudaMemcpyDeviceToHost));
-        time_gpu_to_cpu += MPI_Wtime() - t0;
+        exchange_gpu(w);
         
-        // Обмен граничными значениями через MPI (теперь используем exchange_gpu_optimized)
-        exchange_gpu_optimized();
-        
-        // Копируем границы обратно на GPU
         t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(boundary_bottom_dev, boundary_bottom_host, nx * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_top_dev, boundary_top_host, nx * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_left_dev, boundary_left_host, ny * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_right_dev, boundary_right_host, ny * sizeof(double), cudaMemcpyHostToDevice));
-        time_cpu_to_gpu += MPI_Wtime() - t0;
-        
-        // Инжект границы обратно в w_dev
-        // ПОРЯДОК: recv_down (jl=0), recv_up (jl=ny+1), recv_left (il=0), recv_right (il=nx+1)
-        // boundary_bottom получили от nbr_down -> в jl=0
-        // boundary_top получили от nbr_up -> в jl=ny+1
-        t0 = MPI_Wtime();
-        launch_inject_boundaries(w_dev, boundary_bottom_dev, boundary_top_dev,
-                                boundary_left_dev, boundary_right_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(w_dev, w.data.data(), (nx+2)*(ny+2)*sizeof(double), cudaMemcpyHostToDevice));
         time_cpu_to_gpu += MPI_Wtime() - t0;
         
         // Применение оператора A: Ap = A * p
