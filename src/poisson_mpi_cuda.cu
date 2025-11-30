@@ -328,13 +328,11 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     time_mpi_exchange = 0.0;
     time_mpi_allreduce = 0.0;
     time_cpu_reductions = 0.0;
-    time_gpu_p2p = 0.0;
     
     // Выбор GPU устройства по номеру MPI ранга
     CUDA_CHECK(cudaGetDeviceCount(&num_devices));
     device_id = world_rank % num_devices;
     CUDA_CHECK(cudaSetDevice(device_id));
-    p2p_buffer_dev = nullptr;  // Одновременные результаты P2P, аллоцируются при необходимости
     
     // Создание CUDA events
     CUDA_CHECK(cudaEventCreate(&event_start));
@@ -371,8 +369,7 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(boundary_right_dev));
     CUDA_CHECK(cudaFree(boundary_down_dev));
     CUDA_CHECK(cudaFree(boundary_up_dev));
-    if (p2p_buffer_dev) CUDA_CHECK(cudaFree(p2p_buffer_dev));
-    free(reduction_buffer_host);  // Обычный free вместо cudaFreeHost
+    free(reduction_buffer_host);
     
     CUDA_CHECK(cudaEventDestroy(event_start));
     CUDA_CHECK(cudaEventDestroy(event_stop));
@@ -452,8 +449,7 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     int buffer_size = num_reduction_blocks * reduction_threads_per_block;
     CUDA_CHECK(cudaMalloc(&reduction_buffer_dev, buffer_size * sizeof(double)));
     
-    // Обычный malloc вместо pinned memory для совместимости с IBM Spectrum MPI
-    // cudaHostAlloc конфликтует с libpami_cudahook.so на CUDA-aware MPI
+    // Обычный malloc для буфера результатов редукции
     reduction_buffer_host = (double*)malloc(num_reduction_blocks * sizeof(double));
     if (!reduction_buffer_host) {
         fprintf(stderr, "Failed to allocate reduction_buffer_host\n");

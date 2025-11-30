@@ -114,7 +114,7 @@ public:
     
     // Буферы для GPU-редукций
     double *reduction_buffer_dev;  // Для промежуточных сумм
-    double *reduction_buffer_host; // Pinned memory для быстрого копирования
+    double *reduction_buffer_host; // Буфер на CPU для результатов редукции
     int num_reduction_blocks;
     int reduction_threads_per_block;
     
@@ -128,12 +128,10 @@ public:
     double time_mpi_exchange;
     double time_mpi_allreduce;
     double time_cpu_reductions;
-    double time_gpu_p2p;  // P2P обмен между GPU (если несколько GPU)
     
-    // Поддержка multi-GPU P2P
+    // GPU устройство
     int num_devices;
     int device_id;
-    double* p2p_buffer_dev;  // Буфер для P2P обмена результатов редукции
     
     // CUDA events для измерения
     cudaEvent_t event_start, event_stop;
