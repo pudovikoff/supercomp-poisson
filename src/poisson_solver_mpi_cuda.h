@@ -108,6 +108,10 @@ public:
     double *r_dev, *p_dev, *Ap_dev, *z_dev;  // nx*ny - только внутренние узлы
     double *a_face_x_dev, *b_face_y_dev, *Ddiag_dev, *F_dev;
     
+    // Буферы для граничных полос (оптимизация копирования)
+    double *boundary_left_dev, *boundary_right_dev;  // размер ny каждый
+    double *boundary_down_dev, *boundary_up_dev;     // размер nx каждый
+    
     // Буферы для GPU-редукций
     double *reduction_buffer_dev;  // Для промежуточных сумм
     double *reduction_buffer_host; // Pinned memory для быстрого копирования
@@ -165,7 +169,10 @@ private:
     void compute_coefficients();
     void allocate_device_memory();
     void copy_coefficients_to_device();
-    void exchange_gpu(Grid2D& U);
+    void exchange_gpu(vector<double>& boundary_left_host,
+                     vector<double>& boundary_right_host,
+                     vector<double>& boundary_down_host,
+                     vector<double>& boundary_up_host);
     
     // CPU редукции
     double dot_product_cpu(const double* vec1, const double* vec2, int n);
@@ -209,3 +216,13 @@ void launch_update_w_and_compute_diff(double* w_interior_dev, const double* p_de
                                      double alpha, double* thread_diffs_dev,
                                      int n_interior, int num_blocks, int threads_per_block,
                                      cudaStream_t stream);
+
+void launch_extract_boundaries(const double* w_dev,
+                              double* boundary_left_dev, double* boundary_right_dev,
+                              double* boundary_down_dev, double* boundary_up_dev,
+                              int nx, int ny, cudaStream_t stream);
+
+void launch_inject_boundaries(double* w_dev,
+                             const double* boundary_left_dev, const double* boundary_right_dev,
+                             const double* boundary_down_dev, const double* boundary_up_dev,
+                             int nx, int ny, cudaStream_t stream);
