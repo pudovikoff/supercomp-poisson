@@ -149,7 +149,6 @@ __global__ void inject_boundaries_kernel(double* w_with_ghost,
 
 // Обновление w_interior += alpha * p и вычисление ||alpha*p||^2
 // Каждый блок независимо вычисляет свою частичную сумму diff_sq
-// БЕЗ shared memory и __syncthreads()
 __global__ void update_w_and_compute_diff_kernel(double* w_interior, const double* p,
                                                  double alpha, double* thread_diffs,
                                                  int n) {
@@ -169,7 +168,7 @@ __global__ void update_w_and_compute_diff_kernel(double* w_interior, const doubl
     thread_diffs[blockIdx.x * blockDim.x + threadIdx.x] = local_diff_sq;
 }
 
-// Редукция: суммируем все элементы массива длиной num_elems (без shared memory)
+// Редукция: суммируем все элементы массива длиной num_elems
 __global__ void reduce_blocks_kernel(const double* in, double* out, int num_elems) {
     if (blockIdx.x == 0 && threadIdx.x == 0) {
         double sum = 0.0;
@@ -294,7 +293,7 @@ const double PoissonSolverMPICUDA::A2 = -1.0;
 const double PoissonSolverMPICUDA::B2 = 1.0;
 
 PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
-    : M(M_), N(N_), cart_comm(comm_) {
+    : M(M_), N(N_), cart_comm(comm_) { // сразу же инициализоровали для оптимизации
     
     double t_init_start = MPI_Wtime();
     
@@ -439,7 +438,7 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     CUDA_CHECK(cudaMalloc(&Ddiag_dev, n_interior * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&F_dev, n_interior * sizeof(double)));
     
-    // Буферы для редукций: выбираем 256 нитей/блок
+    // Буферы для редукций
     reduction_threads_per_block = 256;
     num_reduction_blocks = (n_interior + reduction_threads_per_block - 1) / reduction_threads_per_block;
     // Ограничиваем число блоков для эффективности
@@ -640,7 +639,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
                                  boundary_down_dev, boundary_up_dev, nx, ny, 0);
         CUDA_CHECK(cudaDeviceSynchronize());
         
-        // 2. Копируем граничные полосы с GPU на CPU (вместо всего массива)
+        // 2. Копируем граничные полосы с GPU на CPU (а не весь массив)
         t0 = MPI_Wtime();
         CUDA_CHECK(cudaMemcpy(boundary_left_host.data(), boundary_left_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(boundary_right_host.data(), boundary_right_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));

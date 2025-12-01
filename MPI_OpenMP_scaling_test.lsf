@@ -85,35 +85,7 @@ for i in $(seq 0 $((TOTAL_TESTS - 1))); do
     echo ""
     
     # Запуск программы
-    OUTPUT=$(mpiexec -n $NP ./bin/poisson_mpi_omp --M $M --N $N --threads $THREADS 2>&1)
-    
-    # Вывод результатов программы (опционально, можно закомментировать)
-    # echo "$OUTPUT"
-    
-    # Извлечение результатов
-    ITERS=$(echo "$OUTPUT" | grep "Iterations:" | awk '{print $2}')
-    TIME=$(echo "$OUTPUT" | grep "Time:" | awk '{print $2}')
-    NORM_E=$(echo "$OUTPUT" | grep "||w||_E" | awk -F'= ' '{print $2}' | awk -F',' '{print $1}')
-    NORM_C=$(echo "$OUTPUT" | grep "||w||_C" | awk -F'= ' '{print $2}')
-    
-    if [ -z "$TIME" ]; then
-        echo "ВНИМАНИЕ: не удалось извлечь время выполнения"
-        printf "%-15s %-15s %-15s %-12s %-15s %-12s\n" "$NP" "$THREADS" "${M}×${N}" "N/A" "N/A" "N/A"
-    else
-        # Сохраняем базовое время (первая конфигурация)
-        if [ -z "$BASE_TIME" ]; then
-            BASE_TIME=$TIME
-            SPEEDUP="1.00"
-        else
-            SPEEDUP=$(echo "scale=2; $BASE_TIME / $TIME" | bc)
-        fi
-        
-        # Вывод строки таблицы
-        printf "%-15s %-15s %-15s %-12s %-15s %-12s\n" "$NP" "$THREADS" "${M}×${N}" "$ITERS" "$TIME" "$SPEEDUP"
-        
-        # Дополнительная информация (для проверки)
-        echo "  ||w||_E = $NORM_E, ||w||_C = $NORM_C"
-    fi
+    mpiexec -n $NP ./bin/poisson_mpi_omp --M $M --N $N --threads $THREADS 2>&1
     
     echo ""
     echo "---"

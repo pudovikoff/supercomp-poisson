@@ -189,10 +189,11 @@ void launch_apply_A_kernel(const double* p_dev, double* Ap_dev,
 void launch_apply_D_inv_kernel(const double* r_dev, double* z_dev,
                                const double* Ddiag_dev,
                                int nx, int ny, cudaStream_t stream);
-
+// y += a * x
 void launch_axpy_kernel(double* y_dev, const double* x_dev,
                        double alpha, int n, cudaStream_t stream);
 
+// update after A
 void launch_vector_update_kernel(double* p_dev, const double* z_dev,
                                 double beta, int n, cudaStream_t stream);
 
