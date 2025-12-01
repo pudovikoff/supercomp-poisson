@@ -34,7 +34,7 @@ make all
 
 ##  Общий отчёт формата pdf (последовательная реализация, OpenMP, MPI, MPI + OpenMP, MPI + CUDA)
 
-**[REPORT.pdf](REPORT.pdf)**
+**[REPORT.pdf](Report/REPORT.pdf)**
 
 
 ## Курс
