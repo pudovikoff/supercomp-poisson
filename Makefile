@@ -3,13 +3,13 @@
 CXX ?= g++
 # Для MPI ВСЕГДА используем mpicxx (он автоматически линкует библиотеки MPI)
 MPICXX ?= mpicxx
-CXXFLAGS_BASE = -std=c++11 -O2 -Wall
+CXXFLAGS_BASE = -std=c++11 -O3 -Wall
 
 # CUDA компилятор и параметры (для MPI+CUDA версии)
 NVCC ?= nvcc
 ARCH ?= sm_35
 HOST_COMP ?= mpicxx
-NVCCFLAGS = -arch=$(ARCH) -ccbin=$(HOST_COMP) -std=c++11 -Xcompiler -fPIC
+NVCCFLAGS = -arch=$(ARCH) -ccbin=$(HOST_COMP) -std=c++11 -Xcompiler -fPIC 
 NVCCLINKFLAGS = -lstdc++ -lm
 
 # Модуль загрузки MPI (для HPC кластера)

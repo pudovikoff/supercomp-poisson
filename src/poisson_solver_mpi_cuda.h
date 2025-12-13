@@ -85,6 +85,9 @@ public:
     int M, N;
     double h1, h2, eps;
     
+    // Флаг для оптимизации (один ГПУ)
+    bool is_single_gpu;
+    
     // Локальный поддомен
     int nx, ny;
     int ix0, ix1, iy0, iy1;
@@ -114,20 +117,29 @@ public:
     
     // Буферы для GPU-редукций
     double *reduction_buffer_dev;  // Для промежуточных сумм
-    double *reduction_buffer_host; // Буфер на CPU для результатов редукции
+    double *reduction_buffer_host; // Буфер на CPU для резултатов редукции
     int num_reduction_blocks;
     int reduction_threads_per_block;
     
-    // Таймеры для отчёта
-    double time_init_gpu;
-    double time_apply_A;
-    double time_apply_D_inv;
-    double time_vector_ops;
-    double time_gpu_to_cpu;
-    double time_cpu_to_gpu;
-    double time_mpi_exchange;
-    double time_mpi_allreduce;
-    double time_cpu_reductions;
+    // Флаг сходимости на GPU (для одного ГПУ)
+    bool *converged_dev;
+    bool converged_host;
+    
+    // Device-скаляры для single-GPU оптимизации (1 двойная точка или переиспользуем reduction_buffer_dev)
+    double *alpha_dev;      // коэффициент alpha
+    double *beta_dev;       // коэффициент beta
+    double *rz_prev_dev;    // предыдущее (z,r) для beta
+    
+    // Таймеры для таблицы
+    double time_coeff_init;       // вычисление коэффициентов на CPU
+    double time_init_gpu;         // GPU инициализация (выделение памяти + H2D копирование)
+    double time_apply_A;          // применение оператора A
+    double time_apply_D_inv;      // предобусловливатель D^-1
+    double time_vector_ops;       // обновление векторов (axpy, update, D2D)
+    double time_gpu_to_cpu;       // GPU->CPU копирования
+    double time_cpu_to_gpu;       // CPU->GPU копирования
+    double time_mpi_exchange;     // MPI обмен границ
+    double time_mpi_allreduce;    // MPI allreduce
     
     // GPU устройство
     int num_devices;
@@ -178,6 +190,12 @@ private:
     
     // GPU редукция (2-ступенчатая: GPU partial + CPU final)
     double dot_product_gpu(const double* vec1_dev, const double* vec2_dev, int n);
+    
+    // GPU редукция без копирования на CPU - ретурнит GPU пойнтер
+    double* dot_product_gpu_ptr(const double* vec1_dev, const double* vec2_dev, int n);
+    
+    // Копирование дного элемента с GPU для редукции и проверки
+    double copy_result_from_gpu(const double* result_dev);
 };
 
 // Объявления CUDA ядер (определены в .cu файле)
@@ -225,3 +243,23 @@ void launch_inject_boundaries(double* w_dev,
                              const double* boundary_left_dev, const double* boundary_right_dev,
                              const double* boundary_down_dev, const double* boundary_up_dev,
                              int nx, int ny, cudaStream_t stream);
+
+void launch_check_convergence(const double* diff_sum_dev, bool* converged_dev,
+                             double delta, double h1, double h2, cudaStream_t stream);
+
+// Device-scalar kernels for single-GPU path
+void launch_compute_alpha(const double* rz_dev, const double* denom_dev, double* alpha_dev,
+                        cudaStream_t stream);
+void launch_compute_beta(const double* rz_new_dev, const double* rz_prev_dev, double* beta_dev,
+                       cudaStream_t stream);
+
+void launch_axpy_dev_scalar(double* y_dev, const double* x_dev, const double* alpha_dev,
+                           double scale, int n, cudaStream_t stream);
+
+void launch_vector_update_dev_scalar(double* p_dev, const double* z_dev, const double* beta_dev,
+                                    int n, cudaStream_t stream);
+
+void launch_update_w_and_compute_diff_dev_scalar(double* w_interior_dev, const double* p_dev,
+                                                const double* alpha_dev, double* thread_diffs_dev,
+                                                int n_interior, int num_blocks, int threads_per_block,
+                                                cudaStream_t stream);

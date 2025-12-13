@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Sequential baseline
-SEQUENTIAL_TIME = 1800.0  # seconds
+SEQUENTIAL_TIME = 970.629623  # seconds
 
 # Data for all implementations
 DATA = {
@@ -22,12 +22,12 @@ DATA = {
         '2 GPU'
     ],
     'times': [
-        1800.0,      # Sequential
+        970.629623,      # Sequential
         70.43,       # OpenMP 16×8
         45.816858,   # MPI 20
         65.774599,   # MPI 10×16
-        23.390093,   # 1 GPU
-        18.731347    # 2 GPU
+        23.96,   # 1 GPU
+        18.35    # 2 GPU
     ],
     'colors': [
         '#808080',   # Gray for sequential

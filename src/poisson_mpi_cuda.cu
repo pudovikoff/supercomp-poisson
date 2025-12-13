@@ -192,6 +192,66 @@ __global__ void dot_product_partial_kernel(const double* vec1, const double* vec
     thread_partials[blockIdx.x * blockDim.x + threadIdx.x] = partial_sum;
 }
 
+// Проверка сходимости на GPU: возвращает 1 если converged, 0 иначе
+__global__ void check_convergence_kernel(const double* diff_sum_dev, bool* converged_dev,
+                                        double delta, double h1, double h2) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        double diff_norm = sqrt(*diff_sum_dev * h1 * h2);
+        *converged_dev = (diff_norm < delta);
+    }
+}
+
+// Device-scalar operations (single-GPU path)
+// Вычисление alpha = rz / denom
+__global__ void compute_alpha_kernel(const double* rz, const double* denom, double* alpha) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        *alpha = (*rz) / (*denom);
+    }
+}
+
+// Вычисление beta = rz_new / rz_old
+__global__ void compute_beta_kernel(const double* rz_new, const double* rz_old, double* beta) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        *beta = (*rz_new) / (*rz_old);
+    }
+}
+
+// y += scale * (*alpha) * x
+__global__ void axpy_dev_scalar_kernel(double* y, const double* x, const double* alpha,
+                                       double scale, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        y[idx] += scale * (*alpha) * x[idx];
+    }
+}
+
+// p = z + (*beta) * p
+__global__ void vector_update_dev_scalar_kernel(double* p, const double* z, const double* beta, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        p[idx] = z[idx] + (*beta) * p[idx];
+    }
+}
+
+// w_interior += (*alpha) * p, compute ||(*alpha)*p||^2
+__global__ void update_w_and_compute_diff_dev_scalar_kernel(double* w_interior, const double* p,
+                                                           const double* alpha, double* thread_diffs,
+                                                           int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int grid_size = blockDim.x * gridDim.x;
+    
+    double local_diff_sq = 0.0;
+    double a_val = *alpha;
+    
+    for (int i = idx; i < n; i += grid_size) {
+        double inc = a_val * p[i];
+        w_interior[i] += inc;
+        local_diff_sq += inc * inc;
+    }
+    
+    thread_diffs[blockIdx.x * blockDim.x + threadIdx.x] = local_diff_sq;
+}
+
 // ========== Функции запуска ядер ==========
 
 void launch_apply_A_kernel(const double* p_dev, double* Ap_dev,
@@ -284,6 +344,43 @@ void launch_inject_boundaries(double* w_dev,
         (w_dev, boundary_left_dev, boundary_right_dev, boundary_down_dev, boundary_up_dev, nx, ny);
 }
 
+void launch_check_convergence(const double* diff_sum_dev, bool* converged_dev,
+                             double delta, double h1, double h2, cudaStream_t stream) {
+    check_convergence_kernel<<<1, 1, 0, stream>>>(diff_sum_dev, converged_dev, delta, h1, h2);
+}
+
+void launch_compute_alpha(const double* rz_dev, const double* denom_dev, double* alpha_dev,
+                        cudaStream_t stream) {
+    compute_alpha_kernel<<<1, 1, 0, stream>>>(rz_dev, denom_dev, alpha_dev);
+}
+
+void launch_compute_beta(const double* rz_new_dev, const double* rz_prev_dev, double* beta_dev,
+                       cudaStream_t stream) {
+    compute_beta_kernel<<<1, 1, 0, stream>>>(rz_new_dev, rz_prev_dev, beta_dev);
+}
+
+void launch_axpy_dev_scalar(double* y_dev, const double* x_dev, const double* alpha_dev,
+                           double scale, int n, cudaStream_t stream) {
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    axpy_dev_scalar_kernel<<<grid, block, 0, stream>>>(y_dev, x_dev, alpha_dev, scale, n);
+}
+
+void launch_vector_update_dev_scalar(double* p_dev, const double* z_dev, const double* beta_dev,
+                                    int n, cudaStream_t stream) {
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    vector_update_dev_scalar_kernel<<<grid, block, 0, stream>>>(p_dev, z_dev, beta_dev, n);
+}
+
+void launch_update_w_and_compute_diff_dev_scalar(double* w_interior_dev, const double* p_dev,
+                                                const double* alpha_dev, double* thread_diffs_dev,
+                                                int n_interior, int num_blocks, int threads_per_block,
+                                                cudaStream_t stream) {
+    update_w_and_compute_diff_dev_scalar_kernel<<<num_blocks, threads_per_block, 0, stream>>>
+        (w_interior_dev, p_dev, alpha_dev, thread_diffs_dev, n_interior);
+}
+
 // ========== Реализация класса PoissonSolverMPICUDA ==========
 
 // Определения статических членов
@@ -299,6 +396,9 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     
     MPI_Comm_rank(cart_comm, &world_rank);
     MPI_Comm_size(cart_comm, &world_size);
+    
+    // Проверяем, работаем ли мы с одним ГПУ
+    is_single_gpu = (world_size == 1);
     
     int dims[2], periods[2], coords[2];
     MPI_Cart_get(cart_comm, 2, dims, periods, coords);
@@ -318,6 +418,7 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     MPI_Cart_shift(cart_comm, 1, +1, &nbr_down, &nbr_up);
     
     // Инициализация таймеров
+    time_coeff_init = 0.0;
     time_init_gpu = 0.0;
     time_apply_A = 0.0;
     time_apply_D_inv = 0.0;
@@ -326,7 +427,6 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     time_cpu_to_gpu = 0.0;
     time_mpi_exchange = 0.0;
     time_mpi_allreduce = 0.0;
-    time_cpu_reductions = 0.0;
     
     // Выбор GPU устройства по номеру MPI ранга
     CUDA_CHECK(cudaGetDeviceCount(&num_devices));
@@ -343,13 +443,15 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     F.assign(nx*ny, 0.0);
     Ddiag.assign(nx*ny, 0.0);
     
+    double t_coeff_start = MPI_Wtime();
     compute_coefficients();
+    time_coeff_init = MPI_Wtime() - t_coeff_start;
     
-    // Выделение памяти на GPU
+    // Выделение памяти на GPU + копирование коэффициентов
+    double t_gpu_init_start = MPI_Wtime();
     allocate_device_memory();
     copy_coefficients_to_device();
-    
-    time_init_gpu = MPI_Wtime() - t_init_start;
+    time_init_gpu = MPI_Wtime() - t_gpu_init_start;
 }
 
 PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
@@ -368,6 +470,10 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(boundary_right_dev));
     CUDA_CHECK(cudaFree(boundary_down_dev));
     CUDA_CHECK(cudaFree(boundary_up_dev));
+    CUDA_CHECK(cudaFree(converged_dev));
+    CUDA_CHECK(cudaFree(alpha_dev));
+    CUDA_CHECK(cudaFree(beta_dev));
+    CUDA_CHECK(cudaFree(rz_prev_dev));
     free(reduction_buffer_host);
     
     CUDA_CHECK(cudaEventDestroy(event_start));
@@ -460,6 +566,16 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     CUDA_CHECK(cudaMalloc(&boundary_right_dev, ny * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&boundary_down_dev, nx * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&boundary_up_dev, nx * sizeof(double)));
+    
+    // Флаг сходимости на GPU для одного ГПУ
+    CUDA_CHECK(cudaMalloc(&converged_dev, sizeof(bool)));
+    converged_host = false;
+    
+    // Device-скаляры для single-GPU оптимизации
+    CUDA_CHECK(cudaMalloc(&alpha_dev, sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&beta_dev, sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&rz_prev_dev, sizeof(double)));
+    // diff_sum_dev используем reduction_buffer_dev
 }
 
 void PoissonSolverMPICUDA::copy_coefficients_to_device() {
@@ -556,6 +672,29 @@ double PoissonSolverMPICUDA::dot_product_gpu(const double* vec1_dev, const doubl
     return reduction_buffer_host[0] * h1 * h2;
 }
 
+// Оптимизированная версия: возвращает GPU пойнтер без копирования
+double* PoissonSolverMPICUDA::dot_product_gpu_ptr(const double* vec1_dev, const double* vec2_dev, int n) {
+    // Этап 1: каждый поток пишет свою частичную сумму
+    launch_dot_product_partial(vec1_dev, vec2_dev, reduction_buffer_dev, n,
+                              num_reduction_blocks, reduction_threads_per_block, 0);
+    
+    // Этап 2: одна нить на GPU суммирует все элементы
+    int num_elems = num_reduction_blocks * reduction_threads_per_block;
+    launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems, 0);
+    
+    // Возвращаем GPU пойнтер на результат
+    return reduction_buffer_dev;
+}
+
+// Копирование результата с GPU, умножение на h1*h2
+double PoissonSolverMPICUDA::copy_result_from_gpu(const double* result_dev) {
+    double t0 = MPI_Wtime();
+    CUDA_CHECK(cudaMemcpy(reduction_buffer_host, result_dev,
+                         sizeof(double), cudaMemcpyDeviceToHost));
+    time_gpu_to_cpu += MPI_Wtime() - t0;
+    return reduction_buffer_host[0] * h1 * h2;
+}
+
 double PoissonSolverMPICUDA::max_norm_cpu(const double* vec, int n) {
     double m = 0.0;
     for (int i = 0; i < n; ++i) {
@@ -597,71 +736,210 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     CUDA_CHECK(cudaMemset(w_dev, 0, (nx+2)*(ny+2)*sizeof(double)));
     CUDA_CHECK(cudaMemset(w_interior_dev, 0, n_interior*sizeof(double)));
     
+    // CG предобработка: инициализация до цикла
     // Инициализация r = F на GPU
-    double t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(r_dev, F_dev, n_interior * sizeof(double), cudaMemcpyDeviceToDevice));
-    time_cpu_to_gpu += MPI_Wtime() - t0;
     
     // z = D^{-1} * r
-    CUDA_CHECK(cudaEventRecord(event_start));
     launch_apply_D_inv_kernel(r_dev, z_dev, Ddiag_dev, nx, ny, 0);
-    CUDA_CHECK(cudaEventRecord(event_stop));
-    CUDA_CHECK(cudaEventSynchronize(event_stop));
-    float ms;
-    CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
-    time_apply_D_inv += ms / 1000.0;
     
     // p = z
-    t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(p_dev, z_dev, n_interior * sizeof(double), cudaMemcpyDeviceToDevice));
-    time_vector_ops += MPI_Wtime() - t0;
     
-    // Вычисление rz_global = (z, r) на GPU
-    double rz_local = dot_product_gpu(z_dev, r_dev, n_interior);
+    // Вычисление rz = (z, r) на GPU
+    double* rz_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
     
-    double rz_global = 0.0;
-    t0 = MPI_Wtime();
-    MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
-    time_mpi_allreduce += MPI_Wtime() - t0;
+    if (is_single_gpu) {
+        // Пока сохраним rz в rz_prev_dev на GPU
+        CUDA_CHECK(cudaMemcpy(rz_prev_dev, rz_dev, sizeof(double), cudaMemcpyDeviceToDevice));
+    } else {
+        // Несколько GPU: копируем на CPU для MPI
+        double rz_local = copy_result_from_gpu(rz_dev);
+        double rz_global = 0.0;
+        double t0 = MPI_Wtime();
+        MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+        time_mpi_allreduce += MPI_Wtime() - t0;
+    }
     
     // Буферы для граничных полос на CPU
     vector<double> boundary_left_host(ny), boundary_right_host(ny);
     vector<double> boundary_down_host(nx), boundary_up_host(nx);
     
-    for (int k = 0; k < max_iter; ++k) {
-        // Копируем p на w_dev для применения оператора A (нужны граничные значения)
-        launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
+    if (is_single_gpu) {
+        // ===== SINGLE-GPU OPTIMIZED PATH (Device-scalar) =====
+
+        float ms; // для CUDA event timing
+        for (int k = 0; k < max_iter; ++k) {
+            // Копируем p на w_dev для применения оператора A (учитываем во "Vector ops")
+
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
+ 
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+ 
+            
+            // Применение оператора A: Ap = A * p
+ 
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_apply_A_kernel(w_dev, Ap_dev, a_face_x_dev, b_face_y_dev, nx, ny, h1, h2, 0);
+ 
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_apply_A += ms / 1000.0;
+ 
+            
+            // Вычисление alpha = (z,r) / (Ap,p) на GPU (dot, reduce, scalar compute)
+ 
+            CUDA_CHECK(cudaEventRecord(event_start));
+            double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
+            launch_compute_alpha(rz_prev_dev, denom_dev, alpha_dev, 0);
+ 
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+ 
+            
+            // w_interior += alpha * p, вычисляем ||alpha*p||^2 (учет во "Vector ops")
+ 
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
+                                                       reduction_buffer_dev, n_interior, 
+                                                       num_reduction_blocks, reduction_threads_per_block, 0);
+            // Редукция на GPU
+            int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
+            launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
+            // Проверка сходимости
+            launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
+ 
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+ 
+            
+            CUDA_CHECK(cudaDeviceSynchronize()); // Необходима для чтения флага
+            
+            // Копируем флаг сходимости (1 байт) - блокирующее копирование
+            double t0_conv = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(&converged_host, converged_dev, sizeof(bool), cudaMemcpyDeviceToHost));
+            time_gpu_to_cpu += MPI_Wtime() - t0_conv;
+            
+            if (converged_host) {
+                iters = k + 1;
+                tsec = MPI_Wtime() - t_total_start;
+                
+                launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
+                CUDA_CHECK(cudaDeviceSynchronize());
+                
+                t0_conv = MPI_Wtime();
+                CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
+                time_gpu_to_cpu += MPI_Wtime() - t0_conv;
+                return;
+            }
+            
+            // r = r - alpha * Ap
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_axpy_dev_scalar(r_dev, Ap_dev, alpha_dev, -1.0, n_interior, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+            
+            // z = D^{-1} * r
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_apply_D_inv_kernel(r_dev, z_dev, Ddiag_dev, nx, ny, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_apply_D_inv += ms / 1000.0;
+            
+            // Вычисление rz_new = (z,r) на GPU + beta (учет во "Vector ops")
+            CUDA_CHECK(cudaEventRecord(event_start));
+            double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+            // beta = rz_new / rz_old
+            launch_compute_beta(rz_new_dev, rz_prev_dev, beta_dev, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+            
+            // p = z + beta * p
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_vector_update_dev_scalar(p_dev, z_dev, beta_dev, n_interior, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+            
+            // rz_prev = rz_new для следующей итерации (D2D копирование - часть vector ops)
+            double t_vec = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(rz_prev_dev, rz_new_dev, sizeof(double), cudaMemcpyDeviceToDevice));
+            time_vector_ops += MPI_Wtime() - t_vec;
+            
+            iters = k + 1;
+        }
+    } else {
+        // ===== MULTI-GPU PATH (Host-scalar with MPI) =====
+        // Инициализируем rz_global перед циклом
+        double rz_local_init = copy_result_from_gpu(rz_dev);
+        double rz_global = 0.0;
+        double t0 = MPI_Wtime();
+        MPI_Allreduce(&rz_local_init, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+        time_mpi_allreduce += MPI_Wtime() - t0;
         
-        // Оптимизированный обмен: копируем только граничные полосы
-        // 1. Извлекаем границы из w_dev на GPU
-        launch_extract_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
-                                 boundary_down_dev, boundary_up_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        
-        // 2. Копируем граничные полосы с GPU на CPU (а не весь массив)
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(boundary_left_host.data(), boundary_left_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_right_host.data(), boundary_right_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_down_host.data(), boundary_down_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_up_host.data(), boundary_up_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
-        time_gpu_to_cpu += MPI_Wtime() - t0;
-        
-        // 3. MPI обмен граничных значений
-        exchange_gpu(boundary_left_host, boundary_right_host, boundary_down_host, boundary_up_host);
-        
-        // 4. Копируем обновлённые границы обратно на GPU
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(boundary_left_dev, boundary_left_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_right_dev, boundary_right_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_down_dev, boundary_down_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_up_dev, boundary_up_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
-        time_cpu_to_gpu += MPI_Wtime() - t0;
-        
-        // 5. Вставляем граничные значения обратно в w_dev
-        launch_inject_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
-                                boundary_down_dev, boundary_up_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        float ms; // для CUDA event timing
+        for (int k = 0; k < max_iter; ++k) {
+            // Копируем p на w_dev для применения оператора A (учет во "Vector ops")
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+            
+            // При работе с несколькими ГПУ нужно обновить граничные значения
+            // Оптимизированный обмен: копируем только граничные полосы
+            // 1. Извлекаем границы из w_dev на GPU (учет во "Vector ops")
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_extract_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
+                                     boundary_down_dev, boundary_up_dev, nx, ny, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+            
+            // 2. Копируем граничные полосы с GPU на CPU (а не весь массив)
+            t0 = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(boundary_left_host.data(), boundary_left_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(boundary_right_host.data(), boundary_right_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(boundary_down_host.data(), boundary_down_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(boundary_up_host.data(), boundary_up_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
+            time_gpu_to_cpu += MPI_Wtime() - t0;
+            
+            // 3. MPI обмен граничных значений
+            exchange_gpu(boundary_left_host, boundary_right_host, boundary_down_host, boundary_up_host);
+            
+            // 4. Копируем обновлённые границы обратно на GPU
+            t0 = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(boundary_left_dev, boundary_left_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(boundary_right_dev, boundary_right_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(boundary_down_dev, boundary_down_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(boundary_up_dev, boundary_up_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
+            time_cpu_to_gpu += MPI_Wtime() - t0;
+            
+            // 5. Вставляем граничные значения обратно в w_dev (учет во "Vector ops")
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_inject_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
+                                    boundary_down_dev, boundary_up_dev, nx, ny, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
         
         // Применение оператора A: Ap = A * p
         CUDA_CHECK(cudaEventRecord(event_start));
@@ -671,8 +949,16 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_apply_A += ms / 1000.0;
         
-        // Вычисление alpha на GPU
-        double denom_local = dot_product_gpu(Ap_dev, p_dev, n_interior);
+        // Вычисление alpha на GPU (dot, reduce) — учет во "Vector ops"
+        CUDA_CHECK(cudaEventRecord(event_start));
+        double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
+        CUDA_CHECK(cudaEventRecord(event_stop));
+        CUDA_CHECK(cudaEventSynchronize(event_stop));
+        CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+        time_vector_ops += ms / 1000.0;
+        
+        CUDA_CHECK(cudaDeviceSynchronize());
+        double denom_local = copy_result_from_gpu(denom_dev);
         
         double denom = 0.0;
         t0 = MPI_Wtime();
@@ -686,16 +972,21 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         launch_update_w_and_compute_diff(w_interior_dev, p_dev, alpha, reduction_buffer_dev,
                                          n_interior, num_reduction_blocks, reduction_threads_per_block, 0);
         
-        // Финальная редукция на GPU: суммируем все (num_blocks * threads_per_block) частичных результатов
+        // Финальная редукция на GPU (учет во "Vector ops")
         int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
+        CUDA_CHECK(cudaEventRecord(event_start));
         launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
+        CUDA_CHECK(cudaEventRecord(event_stop));
+        CUDA_CHECK(cudaEventSynchronize(event_stop));
+        CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+        time_vector_ops += ms / 1000.0;
         
-        // Копируем результат (1 элемент)
+        // Копируем результат для проверки сходимости
         t0 = MPI_Wtime();
         CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
                              sizeof(double), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaDeviceSynchronize());
         time_gpu_to_cpu += MPI_Wtime() - t0;
-        
         double diff_sq_local = reduction_buffer_host[0];
         
         double diff_sq = 0.0;
@@ -712,7 +1003,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
             CUDA_CHECK(cudaDeviceSynchronize());
             
-            // Копируем на хост для вывода норм
+        // Копируем на хост для вывода норм - блокирующее
             t0 = MPI_Wtime();
             CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
             time_gpu_to_cpu += MPI_Wtime() - t0;
@@ -735,8 +1026,16 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_apply_D_inv += ms / 1000.0;
         
-        // Вычисление rz_new на GPU
-        double rz_new_local = dot_product_gpu(z_dev, r_dev, n_interior);
+        // Вычисление rz_new на GPU (учет во "Vector ops")
+        CUDA_CHECK(cudaEventRecord(event_start));
+        double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+        CUDA_CHECK(cudaEventRecord(event_stop));
+        CUDA_CHECK(cudaEventSynchronize(event_stop));
+        CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+        time_vector_ops += ms / 1000.0;
+        
+        CUDA_CHECK(cudaDeviceSynchronize());
+        double rz_new_local = copy_result_from_gpu(rz_new_dev); // НУЖНО для бета!
         
         double rz_new = 0.0;
         t0 = MPI_Wtime();
@@ -755,18 +1054,19 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         rz_global = rz_new;
         iters = k + 1;
+        }
     }
-    
-    tsec = MPI_Wtime() - t_total_start;
     
     // Копируем w_interior в w_dev для финального результата
     launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
     CUDA_CHECK(cudaDeviceSynchronize());
     
-    // Копируем финальное w обратно на хост
-    t0 = MPI_Wtime();
+    // Копируем финальное w обратно на хост - блокирующее
+    double t_final = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
-    time_gpu_to_cpu += MPI_Wtime() - t0;
+    time_gpu_to_cpu += MPI_Wtime() - t_final;
+    
+    tsec = MPI_Wtime() - t_total_start;
 }
 
 // ========== Главная программа ==========
@@ -821,9 +1121,11 @@ int main(int argc, char** argv) {
     PoissonSolverMPICUDA solver(args.M, args.N, cart_comm);
     
     Grid2D w(solver.nx, solver.ny);
-    for (int i = 0; i <= solver.nx + 1; ++i)
-        for (int j = 0; j <= solver.ny + 1; ++j)
+    for (int i = 0; i <= solver.nx + 1; ++i) {
+        for (int j = 0; j <= solver.ny + 1; ++j) {
             w.at(i, j) = 0.0;
+        }
+    }
     
     int iters = 0;
     double tsec = 0.0;
@@ -840,15 +1142,19 @@ int main(int argc, char** argv) {
         printf("Total time: %.6f s\n", tsec);
         printf("||w||_E = %e, ||w||_C = %e\n", nE, nC);
         printf("\n=== Detailed timings ===\n");
+        // Для таблицы: Тип | Итер | Время | ||w||_E | ||w||_C | GPU init | apply_A | apply_D_inv | Обновление векторов | GPU->CPU | CPU->GPU | MPI обмен | MPI allreduce | CPU reduce | Coeff. Init | OpenMP reduce
+        printf("\n=== Для таблицы ===\n");
+        printf("Coeff. Init (CPU):   %.6f s\n", solver.time_coeff_init);
         printf("GPU initialization:  %.6f s\n", solver.time_init_gpu);
-        printf("apply_A kernels:     %.6f s\n", solver.time_apply_A);
-        printf("apply_D_inv kernels: %.6f s\n", solver.time_apply_D_inv);
-        printf("Vector ops kernels:  %.6f s\n", solver.time_vector_ops);
+        printf("apply_A:             %.6f s\n", solver.time_apply_A);
+        printf("apply_D_inv:         %.6f s\n", solver.time_apply_D_inv);
+        printf("Обновление векторов: %.6f s\n", solver.time_vector_ops);
         printf("GPU->CPU copies:     %.6f s\n", solver.time_gpu_to_cpu);
         printf("CPU->GPU copies:     %.6f s\n", solver.time_cpu_to_gpu);
         printf("MPI exchange:        %.6f s\n", solver.time_mpi_exchange);
         printf("MPI allreduce:       %.6f s\n", solver.time_mpi_allreduce);
-        printf("CPU reductions:      %.6f s\n", solver.time_cpu_reductions);
+        printf("CPU reduce:          %.6f s (N/A for GPU version)\n", 0.0);
+        printf("OpenMP reduce:       %.6f s (N/A for GPU version)\n", 0.0);
     }
     
     MPI_Comm_free(&cart_comm);

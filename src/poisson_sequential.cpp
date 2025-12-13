@@ -8,6 +8,10 @@
 
 using namespace std;
 
+// Глобальные векторы для сохранения времен всех итераций
+static vector<double> all_iteration_times;
+static vector<int> all_grid_sizes;
+
 // Параметры области (вариант 7 - "сапожок")
 // Область: {(x,y): -1 < x,y < 1} \ {(x,y): 0 < x,y < 1}
 const double A1 = -1.0, B1 = 1.0;  // границы по x
@@ -115,6 +119,9 @@ public:
     double time_vector_ops = 0.0;         // Векторные операции
     double time_reductions = 0.0;         // Редукции (скалярные произведения, нормы)
     double time_total = 0.0;              // Общее время работы solve_CG
+    
+    vector<double> iteration_times;       // Время каждой итерации
+    vector<int> grid_size_log;            // Размер сетки для каждого вызова solve_CG
     
     PoissonSolver(int M_, int N_) : M(M_), N(N_) {
         h1 = (B1 - A1) / M;
@@ -272,6 +279,10 @@ public:
         // w(0) = 0 (начальное приближение)
         w.assign(M - 1, vector<double>(N - 1, 0.0));
         
+        // Очистка логов с предыдущих вызовов
+        iteration_times.clear();
+        grid_size_log.clear();
+        
         // r(0) = B - A*w(0) = F
         r = F;
         
@@ -304,6 +315,8 @@ public:
         
         // Итерационный процесс
         for (int k = 0; k < max_iter; ++k) {
+            auto iter_start = chrono::high_resolution_clock::now();  // Начало итерации
+            
             // Ap = A * p
             t0 = chrono::high_resolution_clock::now();
             apply_A(p, Ap);
@@ -344,6 +357,13 @@ public:
             
             if (diff_norm < delta) {
                 iter_count = k + 1;
+                auto iter_end = chrono::high_resolution_clock::now();
+                double iter_duration = chrono::duration<double>(iter_end - iter_start).count();
+                iteration_times.push_back(iter_duration);
+                grid_size_log.push_back(M);
+                all_iteration_times.push_back(iter_duration);
+                all_grid_sizes.push_back(M);
+                
                 auto end_time = chrono::high_resolution_clock::now();
                 solve_time = chrono::duration<double>(end_time - start_time).count();
                 time_total += solve_time;
@@ -414,6 +434,14 @@ public:
             time_vector_ops += chrono::duration<double>(t1 - t0).count();
             
             rz_old = rz_new;
+            
+            // Запись времени итерации
+            auto iter_end = chrono::high_resolution_clock::now();
+            double iter_duration = chrono::duration<double>(iter_end - iter_start).count();
+            iteration_times.push_back(iter_duration);
+            grid_size_log.push_back(M);
+            all_iteration_times.push_back(iter_duration);
+            all_grid_sizes.push_back(M);
         }
         
         iter_count = max_iter;
@@ -433,6 +461,18 @@ public:
                 double y = A2 + (j + 1) * h2;
                 file << x << " " << y << " " << w[i][j] << "\n";
             }
+        }
+        
+        file.close();
+    }
+    
+    // Сохранение времен итераций в файл
+    void save_iteration_times(const string& filename) {
+        ofstream file(filename);
+        file << scientific << setprecision(10);
+        
+        for (size_t i = 0; i < iteration_times.size(); ++i) {
+            file << grid_size_log[i] << " " << iteration_times[i] << "\n";
         }
         
         file.close();
@@ -486,6 +526,16 @@ int main(int argc, char* argv[]) {
             cout << "  Решение сохранено в results/solution_40x40.txt" << endl << endl;
         }
     }
+    
+    // Сохранение времен всех итераций в конце программы
+    cout << "\n=== Сохранение времен итераций ===" << endl;
+    ofstream timing_file("iteration_times.txt");
+    timing_file << scientific << setprecision(10);
+    for (size_t i = 0; i < all_iteration_times.size(); ++i) {
+        timing_file << all_grid_sizes[i] << " " << all_iteration_times[i] << "\n";
+    }
+    timing_file.close();
+    cout << "Времена итераций сохранены в iteration_times.txt (" << all_iteration_times.size() << " итераций)" << endl;
     
     return 0;
 }
