@@ -482,6 +482,7 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     // Флаг сходимости на GPU для одного ГПУ
     CUDA_CHECK(cudaMalloc(&converged_dev, sizeof(bool)));
     converged_host = false;
+}
 
 void PoissonSolverMPICUDA::copy_coefficients_to_device() {
     double t0 = MPI_Wtime();
