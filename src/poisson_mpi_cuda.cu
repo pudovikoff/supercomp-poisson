@@ -5,6 +5,10 @@
 #include <cmath>
 #include "poisson_solver_mpi_cuda.h"
 
+// Флаг для включения/отключения детального таймирования
+// Закомментируйте для Release версии (без таймирования)
+// #define ENABLE_DETAILED_TIMING
+
 #define CUDA_CHECK(call) { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
@@ -767,35 +771,51 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     
     if (is_single_gpu) {
         // ===== SINGLE-GPU OPTIMIZED PATH (Device-scalar) =====
+#ifdef ENABLE_DETAILED_TIMING
         float ms; // для CUDA event timing
+#endif
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A (учитываем во "Vector ops")
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
             // Применение оператора A: Ap = A * p
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_apply_A_kernel(w_dev, Ap_dev, a_face_x_dev, b_face_y_dev, nx, ny, h1, h2, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_apply_A += ms / 1000.0;
+#endif
             
             // Вычисление alpha = (z,r) / (Ap,p) на GPU (dot, reduce, scalar compute)
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
             launch_compute_alpha(rz_prev_dev, denom_dev, alpha_dev, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
             // w_interior += alpha * p, вычисляем ||alpha*p||^2 (учет во "Vector ops")
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
                                                        reduction_buffer_dev, n_interior, 
                                                        num_reduction_blocks, reduction_threads_per_block, 0);
@@ -804,12 +824,15 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
             // Проверка сходимости
             launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
-            CUDA_CHECK(cudaDeviceSynchronize()); // Необходима для чтения флага
+            // Синхронизируем перед чтением флага сходимости
+            CUDA_CHECK(cudaDeviceSynchronize());
             
             // Копируем флаг сходимости (1 байт) - блокирующее копирование
             double t0_conv = MPI_Wtime();
@@ -830,38 +853,54 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             }
             
             // r = r - alpha * Ap
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_axpy_dev_scalar(r_dev, Ap_dev, alpha_dev, -1.0, n_interior, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
             // z = D^{-1} * r
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_apply_D_inv_kernel(r_dev, z_dev, Ddiag_dev, nx, ny, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_apply_D_inv += ms / 1000.0;
+#endif
             
             // Вычисление rz_new = (z,r) на GPU + beta (учет во "Vector ops")
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
             // beta = rz_new / rz_old
             launch_compute_beta(rz_new_dev, rz_prev_dev, beta_dev, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
             // p = z + beta * p
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_vector_update_dev_scalar(p_dev, z_dev, beta_dev, n_interior, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
             // rz_prev = rz_new для следующей итерации (D2D копирование - часть vector ops)
             double t_vec = MPI_Wtime();
@@ -879,26 +918,36 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         MPI_Allreduce(&rz_local_init, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
         time_mpi_allreduce += MPI_Wtime() - t0;
         
+#ifdef ENABLE_DETAILED_TIMING
         float ms; // для CUDA event timing
+#endif
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A (учет во "Vector ops")
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
             // При работе с несколькими ГПУ нужно обновить граничные значения
             // Оптимизированный обмен: копируем только граничные полосы
             // 1. Извлекаем границы из w_dev на GPU (учет во "Vector ops")
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_extract_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
                                      boundary_down_dev, boundary_up_dev, nx, ny, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
             
             // 2. Копируем граничные полосы с GPU на CPU (а не весь массив)
             t0 = MPI_Wtime();
@@ -920,29 +969,41 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             time_cpu_to_gpu += MPI_Wtime() - t0;
             
             // 5. Вставляем граничные значения обратно в w_dev (учет во "Vector ops")
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_start));
+#endif
             launch_inject_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
                                     boundary_down_dev, boundary_up_dev, nx, ny, 0);
+#ifdef ENABLE_DETAILED_TIMING
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+#endif
         
         // Применение оператора A: Ap = A * p
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_start));
+#endif
         launch_apply_A_kernel(w_dev, Ap_dev, a_face_x_dev, b_face_y_dev, nx, ny, h1, h2, 0);
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_stop));
         CUDA_CHECK(cudaEventSynchronize(event_stop));
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_apply_A += ms / 1000.0;
+#endif
         
         // Вычисление alpha на GPU (dot, reduce) — учет во "Vector ops"
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_start));
+#endif
         double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_stop));
         CUDA_CHECK(cudaEventSynchronize(event_stop));
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_vector_ops += ms / 1000.0;
+#endif
         
         CUDA_CHECK(cudaDeviceSynchronize());
         double denom_local = copy_result_from_gpu(denom_dev);
@@ -961,12 +1022,16 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         // Финальная редукция на GPU (учет во "Vector ops")
         int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_start));
+#endif
         launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_stop));
         CUDA_CHECK(cudaEventSynchronize(event_stop));
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_vector_ops += ms / 1000.0;
+#endif
         
         // Копируем результат для проверки сходимости
         t0 = MPI_Wtime();
@@ -998,28 +1063,40 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         }
         
         // r = r - alpha * Ap (на GPU)
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_start));
+#endif
         launch_axpy_kernel(r_dev, Ap_dev, -alpha, n_interior, 0);
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_stop));
         CUDA_CHECK(cudaEventSynchronize(event_stop));
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_vector_ops += ms / 1000.0;
+#endif
         
         // z = D^{-1} * r (на GPU)
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_start));
+#endif
         launch_apply_D_inv_kernel(r_dev, z_dev, Ddiag_dev, nx, ny, 0);
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_stop));
         CUDA_CHECK(cudaEventSynchronize(event_stop));
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_apply_D_inv += ms / 1000.0;
+#endif
         
         // Вычисление rz_new на GPU (учет во "Vector ops")
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_start));
+#endif
         double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_stop));
         CUDA_CHECK(cudaEventSynchronize(event_stop));
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_vector_ops += ms / 1000.0;
+#endif
         
         CUDA_CHECK(cudaDeviceSynchronize());
         double rz_new_local = copy_result_from_gpu(rz_new_dev); // НУЖНО для бета!
@@ -1032,12 +1109,16 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         double beta = rz_new / rz_global;
         
         // p = z + beta * p (на GPU)
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_start));
+#endif
         launch_vector_update_kernel(p_dev, z_dev, beta, n_interior, 0);
+#ifdef ENABLE_DETAILED_TIMING
         CUDA_CHECK(cudaEventRecord(event_stop));
         CUDA_CHECK(cudaEventSynchronize(event_stop));
         CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
         time_vector_ops += ms / 1000.0;
+#endif
         
         rz_global = rz_new;
         iters = k + 1;
