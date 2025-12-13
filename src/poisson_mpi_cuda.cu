@@ -816,6 +816,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             
             if (converged_host) {
                 iters = k + 1;
+                time_cg_loop += MPI_Wtime() - t_cg_start;
                 tsec = MPI_Wtime() - t_total_start;
                 
                 launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
