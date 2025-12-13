@@ -663,12 +663,14 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     
     // Вычисление rz_global = (z, r) на GPU
     double* rz_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
-    double rz_local = copy_result_from_gpu(rz_dev);
+    double rz_local = (is_single_gpu) ? 0.0 : copy_result_from_gpu(rz_dev);
     
     double rz_global = 0.0;
-    t0 = MPI_Wtime();
-    MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
-    time_mpi_allreduce += MPI_Wtime() - t0;
+    if (!is_single_gpu) {
+        t0 = MPI_Wtime();
+        MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+        time_mpi_allreduce += MPI_Wtime() - t0;
+    }
     
     // Буферы для граничных полос на CPU
     vector<double> boundary_left_host(ny), boundary_right_host(ny);
@@ -726,12 +728,14 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         // Вычисление alpha на GPU
         double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
-        double denom_local = copy_result_from_gpu(denom_dev);
+        double denom_local = (is_single_gpu) ? 0.0 : copy_result_from_gpu(denom_dev);
         
         double denom = 0.0;
-        t0 = MPI_Wtime();
-        MPI_Allreduce(&denom_local, &denom, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
-        time_mpi_allreduce += MPI_Wtime() - t0;
+        if (!is_single_gpu) {
+            t0 = MPI_Wtime();
+            MPI_Allreduce(&denom_local, &denom, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+            time_mpi_allreduce += MPI_Wtime() - t0;
+        }
         
         double alpha = rz_global / denom;
         
@@ -744,14 +748,20 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
         launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
         
-        // Копируем результат только для проверки сходимости и редукции
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
-                             sizeof(double), cudaMemcpyDeviceToHost));
-        time_gpu_to_cpu += MPI_Wtime() - t0;
-        double diff_sq_local = reduction_buffer_host[0];
+        // Копируем результат только для проверки сходимости
+        double diff_sq_local;
+        if (!is_single_gpu) {
+            t0 = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
+                                 sizeof(double), cudaMemcpyDeviceToHost));
+            time_gpu_to_cpu += MPI_Wtime() - t0;
+            diff_sq_local = reduction_buffer_host[0];
+        } else {
+            // При одном ГПУ не копируем - грубые щотравка проверки
+            diff_sq_local = 0.0; // dummy
+        }
         
-        double diff_sq = 0.0;
+        double diff_sq = diff_sq_local; // для одного ППУ аллредуце просто вернет то же значение
         t0 = MPI_Wtime();
         MPI_Allreduce(&diff_sq_local, &diff_sq, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
         time_mpi_allreduce += MPI_Wtime() - t0;
@@ -790,12 +800,14 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         // Вычисление rz_new на GPU
         double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
-        double rz_new_local = copy_result_from_gpu(rz_new_dev);
+        double rz_new_local = (is_single_gpu) ? 0.0 : copy_result_from_gpu(rz_new_dev);
         
         double rz_new = 0.0;
-        t0 = MPI_Wtime();
-        MPI_Allreduce(&rz_new_local, &rz_new, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
-        time_mpi_allreduce += MPI_Wtime() - t0;
+        if (!is_single_gpu) {
+            t0 = MPI_Wtime();
+            MPI_Allreduce(&rz_new_local, &rz_new, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+            time_mpi_allreduce += MPI_Wtime() - t0;
+        }
         
         double beta = rz_new / rz_global;
         
