@@ -686,6 +686,7 @@ double* PoissonSolverMPICUDA::dot_product_gpu_ptr(const double* vec1_dev, const 
 
 // Копирование результата с GPU, умножение на h1*h2
 double PoissonSolverMPICUDA::copy_result_from_gpu(const double* result_dev) {
+    CUDA_CHECK(cudaDeviceSynchronize());
     double t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(reduction_buffer_host, result_dev,
                          sizeof(double), cudaMemcpyDeviceToHost));
@@ -753,8 +754,9 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     CUDA_CHECK(cudaMemcpy(p_dev, z_dev, n_interior * sizeof(double), cudaMemcpyDeviceToDevice));
     time_vector_ops += MPI_Wtime() - t0;
     
-    // Вычисление rz = (z, r) на GPU
+// Вычисление rz = (z, r) на GPU
     double* rz_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+    CUDA_CHECK(cudaDeviceSynchronize());
     
     if (is_single_gpu) {
         // Пока сохраним rz в rz_prev_dev на GPU
@@ -792,7 +794,9 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             
             // Вычисление alpha = (z,r) / (Ap,p) на GPU
             double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
+            CUDA_CHECK(cudaDeviceSynchronize());
             launch_compute_alpha(rz_prev_dev, denom_dev, alpha_dev, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
             
             // w_interior += alpha * p, вычисляем ||alpha*p||^2
             launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
@@ -810,6 +814,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             // Копируем флаг сходимости (1 байт)
             double t0_conv = MPI_Wtime();
             CUDA_CHECK(cudaMemcpy(&converged_host, converged_dev, sizeof(bool), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaDeviceSynchronize());
             time_gpu_to_cpu += MPI_Wtime() - t0_conv;
             
             if (converged_host) {
@@ -843,9 +848,11 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             
             // Вычисление rz_new = (z,r) на GPU
             double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+            CUDA_CHECK(cudaDeviceSynchronize());
             
             // beta = rz_new / rz_old
             launch_compute_beta(rz_new_dev, rz_prev_dev, beta_dev, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
             
             // p = z + beta * p
             CUDA_CHECK(cudaEventRecord(event_start));
@@ -915,6 +922,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         // Вычисление alpha на GPU
         double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
+        CUDA_CHECK(cudaDeviceSynchronize());
         double denom_local = copy_result_from_gpu(denom_dev); // НУЖНО для альфа!
         
         double denom = 0.0;
@@ -937,6 +945,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         t0 = MPI_Wtime();
         CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
                              sizeof(double), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaDeviceSynchronize());
         time_gpu_to_cpu += MPI_Wtime() - t0;
         double diff_sq_local = reduction_buffer_host[0];
         
@@ -979,6 +988,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         // Вычисление rz_new на GPU
         double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+        CUDA_CHECK(cudaDeviceSynchronize());
         double rz_new_local = copy_result_from_gpu(rz_new_dev); // НУЖНО для бета!
         
         double rz_new = 0.0;
@@ -1001,16 +1011,17 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         }
     }
     
-    tsec = MPI_Wtime() - t_total_start;
-    
     // Копируем w_interior в w_dev для финального результата
     launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Копируем финальное w обратно на хост
-    t0 = MPI_Wtime();
+    double t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
     time_gpu_to_cpu += MPI_Wtime() - t0;
+    
+    tsec = MPI_Wtime() - t_total_start;
 }
 
 // ========== Главная программа ==========
