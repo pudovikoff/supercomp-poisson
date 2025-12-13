@@ -767,34 +767,45 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     
     if (is_single_gpu) {
         // ===== SINGLE-GPU OPTIMIZED PATH (Device-scalar) =====
+
         float ms; // для CUDA event timing
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A (учитываем во "Vector ops")
+
             CUDA_CHECK(cudaEventRecord(event_start));
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
+ 
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+ 
             
             // Применение оператора A: Ap = A * p
+ 
             CUDA_CHECK(cudaEventRecord(event_start));
             launch_apply_A_kernel(w_dev, Ap_dev, a_face_x_dev, b_face_y_dev, nx, ny, h1, h2, 0);
+ 
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_apply_A += ms / 1000.0;
+ 
             
             // Вычисление alpha = (z,r) / (Ap,p) на GPU (dot, reduce, scalar compute)
+ 
             CUDA_CHECK(cudaEventRecord(event_start));
             double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
             launch_compute_alpha(rz_prev_dev, denom_dev, alpha_dev, 0);
+ 
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+ 
             
             // w_interior += alpha * p, вычисляем ||alpha*p||^2 (учет во "Vector ops")
+ 
             CUDA_CHECK(cudaEventRecord(event_start));
             launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
                                                        reduction_buffer_dev, n_interior, 
@@ -804,10 +815,12 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
             // Проверка сходимости
             launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
+ 
             CUDA_CHECK(cudaEventRecord(event_stop));
             CUDA_CHECK(cudaEventSynchronize(event_stop));
             CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
             time_vector_ops += ms / 1000.0;
+ 
             
             CUDA_CHECK(cudaDeviceSynchronize()); // Необходима для чтения флага
             
