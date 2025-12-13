@@ -574,6 +574,7 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     CUDA_CHECK(cudaMalloc(&beta_dev, sizeof(double)));
     CUDA_CHECK(cudaMalloc(&rz_prev_dev, sizeof(double)));
     // diff_sum_dev используем reduction_buffer_dev
+}
 
 void PoissonSolverMPICUDA::copy_coefficients_to_device() {
     double t0 = MPI_Wtime();
