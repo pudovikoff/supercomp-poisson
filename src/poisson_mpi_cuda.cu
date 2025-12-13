@@ -300,6 +300,9 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     MPI_Comm_rank(cart_comm, &world_rank);
     MPI_Comm_size(cart_comm, &world_size);
     
+    // Проверяем, работаем ли мы с одним ГПУ
+    is_single_gpu = (world_size == 1);
+    
     int dims[2], periods[2], coords[2];
     MPI_Cart_get(cart_comm, 2, dims, periods, coords);
     Px = dims[0];
@@ -633,35 +636,42 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
         CUDA_CHECK(cudaDeviceSynchronize());
         
-        // Оптимизированный обмен: копируем только граничные полосы
-        // 1. Извлекаем границы из w_dev на GPU
-        launch_extract_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
-                                 boundary_down_dev, boundary_up_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        
-        // 2. Копируем граничные полосы с GPU на CPU (а не весь массив)
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(boundary_left_host.data(), boundary_left_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_right_host.data(), boundary_right_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_down_host.data(), boundary_down_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(boundary_up_host.data(), boundary_up_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
-        time_gpu_to_cpu += MPI_Wtime() - t0;
-        
-        // 3. MPI обмен граничных значений
-        exchange_gpu(boundary_left_host, boundary_right_host, boundary_down_host, boundary_up_host);
-        
-        // 4. Копируем обновлённые границы обратно на GPU
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(boundary_left_dev, boundary_left_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_right_dev, boundary_right_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_down_dev, boundary_down_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(boundary_up_dev, boundary_up_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
-        time_cpu_to_gpu += MPI_Wtime() - t0;
-        
-        // 5. Вставляем граничные значения обратно в w_dev
-        launch_inject_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
-                                boundary_down_dev, boundary_up_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // При работе с несколькими ГПУ нужно обновить граничные значения
+        if (!is_single_gpu) {
+            // Оптимизированный обмен: копируем только граничные полосы
+            // 1. Извлекаем границы из w_dev на GPU
+            launch_extract_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
+                                     boundary_down_dev, boundary_up_dev, nx, ny, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            
+            // 2. Копируем граничные полосы с GPU на CPU (а не весь массив)
+            t0 = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(boundary_left_host.data(), boundary_left_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(boundary_right_host.data(), boundary_right_dev, ny*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(boundary_down_host.data(), boundary_down_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(boundary_up_host.data(), boundary_up_dev, nx*sizeof(double), cudaMemcpyDeviceToHost));
+            time_gpu_to_cpu += MPI_Wtime() - t0;
+            
+            // 3. MPI обмен граничных значений
+            exchange_gpu(boundary_left_host, boundary_right_host, boundary_down_host, boundary_up_host);
+            
+            // 4. Копируем обновлённые границы обратно на GPU
+            t0 = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(boundary_left_dev, boundary_left_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(boundary_right_dev, boundary_right_host.data(), ny*sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(boundary_down_dev, boundary_down_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(boundary_up_dev, boundary_up_host.data(), nx*sizeof(double), cudaMemcpyHostToDevice));
+            time_cpu_to_gpu += MPI_Wtime() - t0;
+            
+            // 5. Вставляем граничные значения обратно в w_dev
+            launch_inject_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
+                                    boundary_down_dev, boundary_up_dev, nx, ny, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
+        } else {
+            // При одном ГПУ граничные значения уже корректны (нулевые)
+            // Нет необходимости в обмене, просто убедимся, что граничные слои нулевые
+            // (они уже инициализированы как нулевые в начале solve_CG_GPU)
+        }
         
         // Применение оператора A: Ap = A * p
         CUDA_CHECK(cudaEventRecord(event_start));

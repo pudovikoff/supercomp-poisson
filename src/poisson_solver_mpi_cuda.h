@@ -85,6 +85,9 @@ public:
     int M, N;
     double h1, h2, eps;
     
+    // Флаг для оптимизации (один ГПУ)
+    bool is_single_gpu;
+    
     // Локальный поддомен
     int nx, ny;
     int ix0, ix1, iy0, iy1;
