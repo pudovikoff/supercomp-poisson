@@ -757,7 +757,6 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     
 // Вычисление rz = (z, r) на GPU
     double* rz_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
-    CUDA_CHECK(cudaDeviceSynchronize());
     
     if (is_single_gpu) {
         // Пока сохраним rz в rz_prev_dev на GPU
@@ -784,7 +783,6 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
-            CUDA_CHECK(cudaDeviceSynchronize());
             
             // Применение оператора A: Ap = A * p
             CUDA_CHECK(cudaEventRecord(event_start));
@@ -796,9 +794,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             
             // Вычисление alpha = (z,r) / (Ap,p) на GPU
             double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
-            CUDA_CHECK(cudaDeviceSynchronize());
             launch_compute_alpha(rz_prev_dev, denom_dev, alpha_dev, 0);
-            CUDA_CHECK(cudaDeviceSynchronize());
             
             // w_interior += alpha * p, вычисляем ||alpha*p||^2
             launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
@@ -809,9 +805,9 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
             launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
             
-            // Проверка сходимости
+            // Проверка сходимости - синхронизируем рыт она копирование
             launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaDeviceSynchronize()); // Необходима для чтения флага
             
             // Копируем флаг сходимости (1 байт) - блокирующее копирование
             double t0_conv = MPI_Wtime();
@@ -849,11 +845,9 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             
             // Вычисление rz_new = (z,r) на GPU
             double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
-            CUDA_CHECK(cudaDeviceSynchronize());
             
             // beta = rz_new / rz_old
             launch_compute_beta(rz_new_dev, rz_prev_dev, beta_dev, 0);
-            CUDA_CHECK(cudaDeviceSynchronize());
             
             // p = z + beta * p
             CUDA_CHECK(cudaEventRecord(event_start));
