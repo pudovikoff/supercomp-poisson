@@ -767,6 +767,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     
     if (is_single_gpu) {
         // ===== SINGLE-GPU OPTIMIZED PATH (Device-scalar) =====
+        float ms; // для CUDA event timing
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
@@ -860,6 +861,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         MPI_Allreduce(&rz_local_init, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
         time_mpi_allreduce += MPI_Wtime() - t0;
         
+        float ms; // для CUDA event timing
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A (нужны граничные значения)
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
