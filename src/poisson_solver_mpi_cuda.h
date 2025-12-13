@@ -130,20 +130,16 @@ public:
     double *beta_dev;       // коэффициент beta
     double *rz_prev_dev;    // предыдущее (z,r) для beta
     
-    // Таймеры для отчёта
-    double time_init_gpu;
-    double time_apply_A;
-    double time_apply_D_inv;
-    double time_vector_ops;
-    double time_gpu_to_cpu;
-    double time_cpu_to_gpu;
-    double time_mpi_exchange;
-    double time_mpi_allreduce;
-    double time_cpu_reductions;
-    double time_cg_preprocessing; // инициализация CG (до цикла)
-    double time_cg_loop;          // главный цикл CG
-    double time_gpu_reductions;   // редукции на GPU (dot product, reduce)
-    double time_gpu_overhead;     // kernel launches, синхронизации, D2D копирования
+    // Таймеры для таблицы
+    double time_coeff_init;       // вычисление коэффициентов на CPU
+    double time_init_gpu;         // GPU инициализация (выделение памяти + H2D копирование)
+    double time_apply_A;          // применение оператора A
+    double time_apply_D_inv;      // предобусловливатель D^-1
+    double time_vector_ops;       // обновление векторов (axpy, update, D2D)
+    double time_gpu_to_cpu;       // GPU->CPU копирования
+    double time_cpu_to_gpu;       // CPU->GPU копирования
+    double time_mpi_exchange;     // MPI обмен границ
+    double time_mpi_allreduce;    // MPI allreduce
     
     // GPU устройство
     int num_devices;
