@@ -140,6 +140,8 @@ public:
     double time_mpi_exchange;
     double time_mpi_allreduce;
     double time_cpu_reductions;
+    double time_cg_loop;        // главный цикл CG
+    double time_other;          // всё остальное (копирования, редукции, синхронизации)
     
     // GPU устройство
     int num_devices;

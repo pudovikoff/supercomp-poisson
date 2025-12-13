@@ -16,9 +16,7 @@ fi
 
 echo ""
 echo "=== Running MPI+CUDA version ==="
-echo "Number of MPI processes: 4"
-echo "Grid size: M=800, N=1200"
-echo ""
+
 
 module load SpectrumMPI
 

@@ -427,6 +427,8 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     time_mpi_exchange = 0.0;
     time_mpi_allreduce = 0.0;
     time_cpu_reductions = 0.0;
+    time_cg_loop = 0.0;
+    time_other = 0.0;
     
     // Выбор GPU устройства по номеру MPI ранга
     CUDA_CHECK(cudaGetDeviceCount(&num_devices));
@@ -686,7 +688,6 @@ double* PoissonSolverMPICUDA::dot_product_gpu_ptr(const double* vec1_dev, const 
 
 // Копирование результата с GPU, умножение на h1*h2
 double PoissonSolverMPICUDA::copy_result_from_gpu(const double* result_dev) {
-    CUDA_CHECK(cudaDeviceSynchronize());
     double t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(reduction_buffer_host, result_dev,
                          sizeof(double), cudaMemcpyDeviceToHost));
@@ -779,6 +780,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     
     if (is_single_gpu) {
         // ===== SINGLE-GPU OPTIMIZED PATH (Device-scalar) =====
+        double t_cg_start = MPI_Wtime();
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
@@ -811,10 +813,9 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
             CUDA_CHECK(cudaDeviceSynchronize());
             
-            // Копируем флаг сходимости (1 байт)
+            // Копируем флаг сходимости (1 байт) - блокирующее копирование
             double t0_conv = MPI_Wtime();
             CUDA_CHECK(cudaMemcpy(&converged_host, converged_dev, sizeof(bool), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaDeviceSynchronize());
             time_gpu_to_cpu += MPI_Wtime() - t0_conv;
             
             if (converged_host) {
@@ -867,6 +868,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             
             iters = k + 1;
         }
+        time_cg_loop += MPI_Wtime() - t_cg_start;
     } else {
         // ===== MULTI-GPU PATH (Host-scalar with MPI) =====
         // Инициализируем rz_global из rz_prev_dev для первой итерации
@@ -876,6 +878,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
         time_mpi_allreduce += MPI_Wtime() - t0;
         
+        double t_cg_start = MPI_Wtime();
         for (int k = 0; k < max_iter; ++k) {
             // Копируем p на w_dev для применения оператора A (нужны граничные значения)
             launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
@@ -963,7 +966,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
             CUDA_CHECK(cudaDeviceSynchronize());
             
-            // Копируем на хост для вывода норм
+        // Копируем на хост для вывода норм - блокирующее
             t0 = MPI_Wtime();
             CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
             time_gpu_to_cpu += MPI_Wtime() - t0;
@@ -1009,16 +1012,16 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         rz_global = rz_new;
         iters = k + 1;
         }
+        time_cg_loop += MPI_Wtime() - t_cg_start;
     }
     
     // Копируем w_interior в w_dev для финального результата
     launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
     CUDA_CHECK(cudaDeviceSynchronize());
     
-    // Копируем финальное w обратно на хост
+    // Копируем финальное w обратно на хост - блокирующее
     double t_final = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaDeviceSynchronize());
     time_gpu_to_cpu += MPI_Wtime() - t_final;
     
     tsec = MPI_Wtime() - t_total_start;
@@ -1098,14 +1101,15 @@ int main(int argc, char** argv) {
         printf("||w||_E = %e, ||w||_C = %e\n", nE, nC);
         printf("\n=== Detailed timings ===\n");
         printf("GPU initialization:  %.6f s\n", solver.time_init_gpu);
-        printf("apply_A kernels:     %.6f s\n", solver.time_apply_A);
-        printf("apply_D_inv kernels: %.6f s\n", solver.time_apply_D_inv);
-        printf("Vector ops kernels:  %.6f s\n", solver.time_vector_ops);
-        printf("GPU->CPU copies:     %.6f s\n", solver.time_gpu_to_cpu);
-        printf("CPU->GPU copies:     %.6f s\n", solver.time_cpu_to_gpu);
-        printf("MPI exchange:        %.6f s\n", solver.time_mpi_exchange);
-        printf("MPI allreduce:       %.6f s\n", solver.time_mpi_allreduce);
-        printf("CPU reductions:      %.6f s\n", solver.time_cpu_reductions);
+        printf("CG loop total:       %.6f s\n", solver.time_cg_loop);
+        printf("  apply_A kernels:     %.6f s\n", solver.time_apply_A);
+        printf("  apply_D_inv kernels: %.6f s\n", solver.time_apply_D_inv);
+        printf("  Vector ops kernels:  %.6f s\n", solver.time_vector_ops);
+        printf("  GPU->CPU copies:     %.6f s\n", solver.time_gpu_to_cpu);
+        printf("  CPU->GPU copies:     %.6f s\n", solver.time_cpu_to_gpu);
+        printf("  MPI exchange:        %.6f s\n", solver.time_mpi_exchange);
+        printf("  MPI allreduce:       %.6f s\n", solver.time_mpi_allreduce);
+        printf("Other (sync, etc):   %.6f s\n", tsec - solver.time_init_gpu - solver.time_cg_loop);
     }
     
     MPI_Comm_free(&cart_comm);
