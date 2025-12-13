@@ -1016,10 +1016,10 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Копируем финальное w обратно на хост
-    double t0 = MPI_Wtime();
+    double t_final = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaDeviceSynchronize());
-    time_gpu_to_cpu += MPI_Wtime() - t0;
+    time_gpu_to_cpu += MPI_Wtime() - t_final;
     
     tsec = MPI_Wtime() - t_total_start;
 }
