@@ -1037,7 +1037,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         t0 = MPI_Wtime();
         CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
                              sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // cudaMemcpy с флагом DeviceToHost уже блокирующий, дополнительная синхронизация не нужна
         time_gpu_to_cpu += MPI_Wtime() - t0;
         double diff_sq_local = reduction_buffer_host[0];
         
