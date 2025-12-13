@@ -125,6 +125,11 @@ public:
     bool *converged_dev;
     bool converged_host;
     
+    // Device-скаляры для single-GPU оптимизации (1 двойная точка или переиспользуем reduction_buffer_dev)
+    double *alpha_dev;      // коэффициент alpha
+    double *beta_dev;       // коэффициент beta
+    double *rz_prev_dev;    // предыдущее (z,r) для beta
+    
     // Таймеры для отчёта
     double time_init_gpu;
     double time_apply_A;
@@ -241,3 +246,20 @@ void launch_inject_boundaries(double* w_dev,
 
 void launch_check_convergence(const double* diff_sum_dev, bool* converged_dev,
                              double delta, double h1, double h2, cudaStream_t stream);
+
+// Device-scalar kernels for single-GPU path
+void launch_compute_alpha(const double* rz_dev, const double* denom_dev, double* alpha_dev,
+                        cudaStream_t stream);
+void launch_compute_beta(const double* rz_new_dev, const double* rz_prev_dev, double* beta_dev,
+                       cudaStream_t stream);
+
+void launch_axpy_dev_scalar(double* y_dev, const double* x_dev, const double* alpha_dev,
+                           double scale, int n, cudaStream_t stream);
+
+void launch_vector_update_dev_scalar(double* p_dev, const double* z_dev, const double* beta_dev,
+                                    int n, cudaStream_t stream);
+
+void launch_update_w_and_compute_diff_dev_scalar(double* w_interior_dev, const double* p_dev,
+                                                const double* alpha_dev, double* thread_diffs_dev,
+                                                int n_interior, int num_blocks, int threads_per_block,
+                                                cudaStream_t stream);

@@ -201,6 +201,57 @@ __global__ void check_convergence_kernel(const double* diff_sum_dev, bool* conve
     }
 }
 
+// Device-scalar operations (single-GPU path)
+// Вычисление alpha = rz / denom
+__global__ void compute_alpha_kernel(const double* rz, const double* denom, double* alpha) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        *alpha = (*rz) / (*denom);
+    }
+}
+
+// Вычисление beta = rz_new / rz_old
+__global__ void compute_beta_kernel(const double* rz_new, const double* rz_old, double* beta) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        *beta = (*rz_new) / (*rz_old);
+    }
+}
+
+// y += scale * (*alpha) * x
+__global__ void axpy_dev_scalar_kernel(double* y, const double* x, const double* alpha,
+                                       double scale, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        y[idx] += scale * (*alpha) * x[idx];
+    }
+}
+
+// p = z + (*beta) * p
+__global__ void vector_update_dev_scalar_kernel(double* p, const double* z, const double* beta, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        p[idx] = z[idx] + (*beta) * p[idx];
+    }
+}
+
+// w_interior += (*alpha) * p, compute ||(*alpha)*p||^2
+__global__ void update_w_and_compute_diff_dev_scalar_kernel(double* w_interior, const double* p,
+                                                           const double* alpha, double* thread_diffs,
+                                                           int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int grid_size = blockDim.x * gridDim.x;
+    
+    double local_diff_sq = 0.0;
+    double a_val = *alpha;
+    
+    for (int i = idx; i < n; i += grid_size) {
+        double inc = a_val * p[i];
+        w_interior[i] += inc;
+        local_diff_sq += inc * inc;
+    }
+    
+    thread_diffs[blockIdx.x * blockDim.x + threadIdx.x] = local_diff_sq;
+}
+
 // ========== Функции запуска ядер ==========
 
 void launch_apply_A_kernel(const double* p_dev, double* Ap_dev,
@@ -298,6 +349,38 @@ void launch_check_convergence(const double* diff_sum_dev, bool* converged_dev,
     check_convergence_kernel<<<1, 1, 0, stream>>>(diff_sum_dev, converged_dev, delta, h1, h2);
 }
 
+void launch_compute_alpha(const double* rz_dev, const double* denom_dev, double* alpha_dev,
+                        cudaStream_t stream) {
+    compute_alpha_kernel<<<1, 1, 0, stream>>>(rz_dev, denom_dev, alpha_dev);
+}
+
+void launch_compute_beta(const double* rz_new_dev, const double* rz_prev_dev, double* beta_dev,
+                       cudaStream_t stream) {
+    compute_beta_kernel<<<1, 1, 0, stream>>>(rz_new_dev, rz_prev_dev, beta_dev);
+}
+
+void launch_axpy_dev_scalar(double* y_dev, const double* x_dev, const double* alpha_dev,
+                           double scale, int n, cudaStream_t stream) {
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    axpy_dev_scalar_kernel<<<grid, block, 0, stream>>>(y_dev, x_dev, alpha_dev, scale, n);
+}
+
+void launch_vector_update_dev_scalar(double* p_dev, const double* z_dev, const double* beta_dev,
+                                    int n, cudaStream_t stream) {
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    vector_update_dev_scalar_kernel<<<grid, block, 0, stream>>>(p_dev, z_dev, beta_dev, n);
+}
+
+void launch_update_w_and_compute_diff_dev_scalar(double* w_interior_dev, const double* p_dev,
+                                                const double* alpha_dev, double* thread_diffs_dev,
+                                                int n_interior, int num_blocks, int threads_per_block,
+                                                cudaStream_t stream) {
+    update_w_and_compute_diff_dev_scalar_kernel<<<num_blocks, threads_per_block, 0, stream>>>
+        (w_interior_dev, p_dev, alpha_dev, thread_diffs_dev, n_interior);
+}
+
 // ========== Реализация класса PoissonSolverMPICUDA ==========
 
 // Определения статических членов
@@ -386,6 +469,9 @@ PoissonSolverMPICUDA::~PoissonSolverMPICUDA() {
     CUDA_CHECK(cudaFree(boundary_down_dev));
     CUDA_CHECK(cudaFree(boundary_up_dev));
     CUDA_CHECK(cudaFree(converged_dev));
+    CUDA_CHECK(cudaFree(alpha_dev));
+    CUDA_CHECK(cudaFree(beta_dev));
+    CUDA_CHECK(cudaFree(rz_prev_dev));
     free(reduction_buffer_host);
     
     CUDA_CHECK(cudaEventDestroy(event_start));
@@ -482,7 +568,12 @@ void PoissonSolverMPICUDA::allocate_device_memory() {
     // Флаг сходимости на GPU для одного ГПУ
     CUDA_CHECK(cudaMalloc(&converged_dev, sizeof(bool)));
     converged_host = false;
-}
+    
+    // Device-скаляры для single-GPU оптимизации
+    CUDA_CHECK(cudaMalloc(&alpha_dev, sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&beta_dev, sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&rz_prev_dev, sizeof(double)));
+    // diff_sum_dev используем reduction_buffer_dev
 
 void PoissonSolverMPICUDA::copy_coefficients_to_device() {
     double t0 = MPI_Wtime();
@@ -661,26 +752,128 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     CUDA_CHECK(cudaMemcpy(p_dev, z_dev, n_interior * sizeof(double), cudaMemcpyDeviceToDevice));
     time_vector_ops += MPI_Wtime() - t0;
     
-    // Вычисление rz_global = (z, r) на GPU
+    // Вычисление rz = (z, r) на GPU
     double* rz_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
-    double rz_local = copy_result_from_gpu(rz_dev); // НУЖНО для вычисления!
     
-    double rz_global = 0.0;
-    t0 = MPI_Wtime();
-    MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm); // Ок - для 1 процесса чисто копирует
-    time_mpi_allreduce += MPI_Wtime() - t0;
+    if (is_single_gpu) {
+        // Пока сохраним rz в rz_prev_dev на GPU
+        CUDA_CHECK(cudaMemcpy(rz_prev_dev, rz_dev, sizeof(double), cudaMemcpyDeviceToDevice));
+    } else {
+        // Несколько GPU: копируем на CPU для MPI
+        double rz_local = copy_result_from_gpu(rz_dev);
+        
+        t0 = MPI_Wtime();
+        double rz_global = 0.0;
+        MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+        time_mpi_allreduce += MPI_Wtime() - t0;
+        
+        // Мы будем требовать rz_global дальше - добавим его в multi-GPU цикл
+    }
     
     // Буферы для граничных полос на CPU
     vector<double> boundary_left_host(ny), boundary_right_host(ny);
     vector<double> boundary_down_host(nx), boundary_up_host(nx);
     
-    for (int k = 0; k < max_iter; ++k) {
-        // Копируем p на w_dev для применения оператора A (нужны граничные значения)
-        launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
+    if (is_single_gpu) {
+        // ===== SINGLE-GPU OPTIMIZED PATH (Device-scalar) =====
+        for (int k = 0; k < max_iter; ++k) {
+            // Копируем p на w_dev для применения оператора A
+            launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            
+            // Применение оператора A: Ap = A * p
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_apply_A_kernel(w_dev, Ap_dev, a_face_x_dev, b_face_y_dev, nx, ny, h1, h2, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_apply_A += ms / 1000.0;
+            
+            // Вычисление alpha = (z,r) / (Ap,p) на GPU
+            double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
+            launch_compute_alpha(rz_prev_dev, denom_dev, alpha_dev, 0);
+            
+            // w_interior += alpha * p, вычисляем ||alpha*p||^2
+            launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
+                                                       reduction_buffer_dev, n_interior, 
+                                                       num_reduction_blocks, reduction_threads_per_block, 0);
+            
+            // Редукция на GPU
+            int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
+            launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
+            
+            // Проверка сходимости
+            launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            
+            // Копируем флаг сходимости (1 байт)
+            double t0_conv = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(&converged_host, converged_dev, sizeof(bool), cudaMemcpyDeviceToHost));
+            time_gpu_to_cpu += MPI_Wtime() - t0_conv;
+            
+            if (converged_host) {
+                iters = k + 1;
+                tsec = MPI_Wtime() - t_total_start;
+                
+                launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
+                CUDA_CHECK(cudaDeviceSynchronize());
+                
+                t0_conv = MPI_Wtime();
+                CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
+                time_gpu_to_cpu += MPI_Wtime() - t0_conv;
+                return;
+            }
+            
+            // r = r - alpha * Ap
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_axpy_dev_scalar(r_dev, Ap_dev, alpha_dev, -1.0, n_interior, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+            
+            // z = D^{-1} * r
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_apply_D_inv_kernel(r_dev, z_dev, Ddiag_dev, nx, ny, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_apply_D_inv += ms / 1000.0;
+            
+            // Вычисление rz_new = (z,r) на GPU
+            double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+            
+            // beta = rz_new / rz_old
+            launch_compute_beta(rz_new_dev, rz_prev_dev, beta_dev, 0);
+            
+            // p = z + beta * p
+            CUDA_CHECK(cudaEventRecord(event_start));
+            launch_vector_update_dev_scalar(p_dev, z_dev, beta_dev, n_interior, 0);
+            CUDA_CHECK(cudaEventRecord(event_stop));
+            CUDA_CHECK(cudaEventSynchronize(event_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
+            time_vector_ops += ms / 1000.0;
+            
+            // rz_prev = rz_new для следующей итерации
+            CUDA_CHECK(cudaMemcpy(rz_prev_dev, rz_new_dev, sizeof(double), cudaMemcpyDeviceToDevice));
+            
+            iters = k + 1;
+        }
+    } else {
+        // ===== MULTI-GPU PATH (Host-scalar with MPI) =====
+        // Инициализируем rz_global из rz_prev_dev для первой итерации
+        double rz_local = copy_result_from_gpu(rz_prev_dev);
+        double rz_global = 0.0;
+        t0 = MPI_Wtime();
+        MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
+        time_mpi_allreduce += MPI_Wtime() - t0;
         
-        // При работе с несколькими ГПУ нужно обновить граничные значения
-        if (!is_single_gpu) {
+        for (int k = 0; k < max_iter; ++k) {
+            // Копируем p на w_dev для применения оператора A (нужны граничные значения)
+            launch_copy_interior_from_device(w_dev, p_dev, nx, ny, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            
+            // При работе с несколькими ГПУ нужно обновить граничные значения
             // Оптимизированный обмен: копируем только граничные полосы
             // 1. Извлекаем границы из w_dev на GPU
             launch_extract_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
@@ -710,11 +903,6 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             launch_inject_boundaries(w_dev, boundary_left_dev, boundary_right_dev,
                                     boundary_down_dev, boundary_up_dev, nx, ny, 0);
             CUDA_CHECK(cudaDeviceSynchronize());
-        } else {
-            // При одном ГПУ граничные значения уже корректны (нулевые)
-            // Нет необходимости в обмене, просто убедимся, что граничные слои нулевые
-            // (они уже инициализированы как нулевые в начале solve_CG_GPU)
-        }
         
         // Применение оператора A: Ap = A * p
         CUDA_CHECK(cudaEventRecord(event_start));
