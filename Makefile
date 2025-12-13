@@ -9,7 +9,7 @@ CXXFLAGS_BASE = -std=c++11 -O3 -Wall
 NVCC ?= nvcc
 ARCH ?= sm_35
 HOST_COMP ?= mpicxx
-NVCCFLAGS = -Wall -O3 -arch=$(ARCH) -ccbin=$(HOST_COMP) -std=c++11 -Xcompiler -fPIC 
+NVCCFLAGS = -O3 -arch=$(ARCH) -ccbin=$(HOST_COMP) -std=c++11 -Xcompiler -fPIC 
 NVCCLINKFLAGS = -lstdc++ -lm
 
 # Модуль загрузки MPI (для HPC кластера)
