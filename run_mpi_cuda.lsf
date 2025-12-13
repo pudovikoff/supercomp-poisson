@@ -2,7 +2,7 @@
 #BSUB -J poisson_mpi_cuda
 #BSUB -o poisson_mpi_cuda_%J.out
 #BSUB -e poisson_mpi_cuda_%J.err
-#BSUB -n 10
+#BSUB -n 1
 #BSUB -W 00:15
 #BSUB -gpu "num=2:mode=shared:mps=yes"
 
@@ -21,6 +21,6 @@ echo "=== Running MPI+CUDA version ==="
 module load SpectrumMPI
 
 # Запуск программы
-mpirun -n 10 ./bin/poisson_mpi_cuda --M 2000 --N 3200
+mpirun -n 1 ./bin/poisson_mpi_cuda --M 2000 --N 3200
 echo ""
 echo "=== Job completed ==="
