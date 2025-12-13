@@ -117,9 +117,13 @@ public:
     
     // Буферы для GPU-редукций
     double *reduction_buffer_dev;  // Для промежуточных сумм
-    double *reduction_buffer_host; // Буфер на CPU для результатов редукции
+    double *reduction_buffer_host; // Буфер на CPU для резултатов редукции
     int num_reduction_blocks;
     int reduction_threads_per_block;
+    
+    // Флаг сходимости на GPU (для одного ГПУ)
+    bool *converged_dev;
+    bool converged_host;
     
     // Таймеры для отчёта
     double time_init_gpu;
@@ -181,6 +185,12 @@ private:
     
     // GPU редукция (2-ступенчатая: GPU partial + CPU final)
     double dot_product_gpu(const double* vec1_dev, const double* vec2_dev, int n);
+    
+    // GPU редукция без копирования на CPU - ретурнит GPU пойнтер
+    double* dot_product_gpu_ptr(const double* vec1_dev, const double* vec2_dev, int n);
+    
+    // Копирование дного элемента с GPU для редукции и проверки
+    double copy_result_from_gpu(const double* result_dev);
 };
 
 // Объявления CUDA ядер (определены в .cu файле)
@@ -228,3 +238,6 @@ void launch_inject_boundaries(double* w_dev,
                              const double* boundary_left_dev, const double* boundary_right_dev,
                              const double* boundary_down_dev, const double* boundary_up_dev,
                              int nx, int ny, cudaStream_t stream);
+
+void launch_check_convergence(const double* diff_sum_dev, bool* converged_dev,
+                             double delta, double h1, double h2, cudaStream_t stream);
