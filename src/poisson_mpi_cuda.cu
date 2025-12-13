@@ -998,6 +998,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         
         rz_global = rz_new;
         iters = k + 1;
+        }
     }
     
     tsec = MPI_Wtime() - t_total_start;
@@ -1064,9 +1065,11 @@ int main(int argc, char** argv) {
     PoissonSolverMPICUDA solver(args.M, args.N, cart_comm);
     
     Grid2D w(solver.nx, solver.ny);
-    for (int i = 0; i <= solver.nx + 1; ++i)
-        for (int j = 0; j <= solver.ny + 1; ++j)
+    for (int i = 0; i <= solver.nx + 1; ++i) {
+        for (int j = 0; j <= solver.ny + 1; ++j) {
             w.at(i, j) = 0.0;
+        }
+    }
     
     int iters = 0;
     double tsec = 0.0;
