@@ -427,6 +427,7 @@ PoissonSolverMPICUDA::PoissonSolverMPICUDA(int M_, int N_, MPI_Comm comm_)
     time_mpi_exchange = 0.0;
     time_mpi_allreduce = 0.0;
     time_cpu_reductions = 0.0;
+    time_cg_preprocessing = 0.0;
     time_cg_loop = 0.0;
     time_gpu_reductions = 0.0;
     time_gpu_overhead = 0.0;
@@ -737,46 +738,32 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
     CUDA_CHECK(cudaMemset(w_dev, 0, (nx+2)*(ny+2)*sizeof(double)));
     CUDA_CHECK(cudaMemset(w_interior_dev, 0, n_interior*sizeof(double)));
     
+    // CG предобработка: инициализация до цикла
+    double t_cg_prep_start = MPI_Wtime();
+    
     // Инициализация r = F на GPU
-    double t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(r_dev, F_dev, n_interior * sizeof(double), cudaMemcpyDeviceToDevice));
-    time_cpu_to_gpu += MPI_Wtime() - t0;
     
     // z = D^{-1} * r
-    CUDA_CHECK(cudaEventRecord(event_start));
     launch_apply_D_inv_kernel(r_dev, z_dev, Ddiag_dev, nx, ny, 0);
-    CUDA_CHECK(cudaEventRecord(event_stop));
-    CUDA_CHECK(cudaEventSynchronize(event_stop));
-    float ms;
-    CUDA_CHECK(cudaEventElapsedTime(&ms, event_start, event_stop));
-    time_apply_D_inv += ms / 1000.0;
     
     // p = z
-    t0 = MPI_Wtime();
     CUDA_CHECK(cudaMemcpy(p_dev, z_dev, n_interior * sizeof(double), cudaMemcpyDeviceToDevice));
-    time_vector_ops += MPI_Wtime() - t0;
     
     // Вычисление rz = (z, r) на GPU
-    double t_reduction = MPI_Wtime();
     double* rz_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
-    time_gpu_reductions += MPI_Wtime() - t_reduction;
     
     if (is_single_gpu) {
         // Пока сохраним rz в rz_prev_dev на GPU
-        double t_overhead = MPI_Wtime();
         CUDA_CHECK(cudaMemcpy(rz_prev_dev, rz_dev, sizeof(double), cudaMemcpyDeviceToDevice));
-        time_gpu_overhead += MPI_Wtime() - t_overhead;
     } else {
         // Несколько GPU: копируем на CPU для MPI
         double rz_local = copy_result_from_gpu(rz_dev);
-        
-        t0 = MPI_Wtime();
         double rz_global = 0.0;
         MPI_Allreduce(&rz_local, &rz_global, 1, MPI_DOUBLE, MPI_SUM, cart_comm);
-        time_mpi_allreduce += MPI_Wtime() - t0;
-        
-        // Мы будем требовать rz_global дальше - добавим его в multi-GPU цикл
     }
+    
+    time_cg_preprocessing = MPI_Wtime() - t_cg_prep_start;
     
     // Буферы для граничных полос на CPU
     vector<double> boundary_left_host(ny), boundary_right_host(ny);
@@ -1120,6 +1107,7 @@ int main(int argc, char** argv) {
         printf("||w||_E = %e, ||w||_C = %e\n", nE, nC);
         printf("\n=== Detailed timings ===\n");
         printf("GPU initialization:  %.6f s\n", solver.time_init_gpu);
+        printf("CG preprocessing:    %.6f s\n", solver.time_cg_preprocessing);
         printf("CG loop total:       %.6f s\n", solver.time_cg_loop);
         printf("  apply_A kernels:     %.6f s\n", solver.time_apply_A);
         printf("  apply_D_inv kernels: %.6f s\n", solver.time_apply_D_inv);

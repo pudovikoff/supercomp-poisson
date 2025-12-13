@@ -140,9 +140,10 @@ public:
     double time_mpi_exchange;
     double time_mpi_allreduce;
     double time_cpu_reductions;
-    double time_cg_loop;        // главный цикл CG
-    double time_gpu_reductions; // редукции на GPU (dot product, reduce)
-    double time_gpu_overhead;   // kernel launches, синхронизации, D2D копирования
+    double time_cg_preprocessing; // инициализация CG (до цикла)
+    double time_cg_loop;          // главный цикл CG
+    double time_gpu_reductions;   // редукции на GPU (dot product, reduce)
+    double time_gpu_overhead;     // kernel launches, синхронизации, D2D копирования
     
     // GPU устройство
     int num_devices;
