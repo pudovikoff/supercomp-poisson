@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <thrust/device_ptr.h>
+#include <thrust/inner_product.h>
 #include "poisson_solver_mpi_cuda.h"
 
 #define CUDA_CHECK(call) { \
@@ -665,32 +667,32 @@ double PoissonSolverMPICUDA::dot_product_cpu(const double* vec1, const double* v
 }
 
 double PoissonSolverMPICUDA::dot_product_gpu(const double* vec1_dev, const double* vec2_dev, int n) {
-    // Этап 1: Каждый поток пишет свою частичную сумму (num_blocks * threads_per_block элементов)
-    launch_dot_product_partial(vec1_dev, vec2_dev, reduction_buffer_dev, n,
-                              num_reduction_blocks, reduction_threads_per_block, 0);
+    // Используем Thrust для вычисления скалярного произведения
+    thrust::device_ptr<const double> d_vec1(vec1_dev);
+    thrust::device_ptr<const double> d_vec2(vec2_dev);
     
-    // Этап 2: Одна нить на GPU суммирует все элементы
-    int num_elems = num_reduction_blocks * reduction_threads_per_block;
-    launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems, 0);
+    double result = thrust::inner_product(d_vec1, d_vec1 + n, d_vec2, 0.0);
     
-    // Копируем результат (1 элемент)
+    // Копируем результат на CPU для учёта времени
     double t0 = MPI_Wtime();
-    CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
-                         sizeof(double), cudaMemcpyDeviceToHost));
+    // Результат уже на CPU после thrust::inner_product, но сохраняем в буфер для совместимости
+    reduction_buffer_host[0] = result;
     time_gpu_to_cpu += MPI_Wtime() - t0;
     
-    return reduction_buffer_host[0] * h1 * h2;
+    return result * h1 * h2;
 }
 
 // Оптимизированная версия: возвращает GPU пойнтер без копирования
+// Использует Thrust inner_product вместо собственных ядер
 double* PoissonSolverMPICUDA::dot_product_gpu_ptr(const double* vec1_dev, const double* vec2_dev, int n) {
-    // Этап 1: каждый поток пишет свою частичную сумму
-    launch_dot_product_partial(vec1_dev, vec2_dev, reduction_buffer_dev, n,
-                              num_reduction_blocks, reduction_threads_per_block, 0);
+    // Используем Thrust для вычисления скалярного произведения
+    thrust::device_ptr<const double> d_vec1(vec1_dev);
+    thrust::device_ptr<const double> d_vec2(vec2_dev);
     
-    // Этап 2: одна нить на GPU суммирует все элементы
-    int num_elems = num_reduction_blocks * reduction_threads_per_block;
-    launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems, 0);
+    double result = thrust::inner_product(d_vec1, d_vec1 + n, d_vec2, 0.0);
+    
+    // Копируем результат в reduction_buffer_dev для совместимости с остальным кодом
+    CUDA_CHECK(cudaMemcpy(reduction_buffer_dev, &result, sizeof(double), cudaMemcpyHostToDevice));
     
     // Возвращаем GPU пойнтер на результат
     return reduction_buffer_dev;
