@@ -826,7 +826,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             time_vector_ops += (t_op3_end - t_op3);
  
             
-            CUDA_CHECK(cudaDeviceSynchronize()); // Необходима для чтения флага
+            // CUDA_CHECK(cudaDeviceSynchronize()); // Необходима для чтения флага
             
             // Копируем флаг сходимости (1 байт) - блокирующее копирование
             double t0_conv = MPI_Wtime();
