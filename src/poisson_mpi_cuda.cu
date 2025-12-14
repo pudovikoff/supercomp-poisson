@@ -9,7 +9,19 @@
 #include <thrust/functional.h>
 #include "poisson_solver_mpi_cuda.h"
 
-#define CUDA_CHECK(call) { \
+// Функтор для вычисления (alpha*x)^2
+struct ScaledSquareFunctor {
+    double alpha_val;
+    
+    ScaledSquareFunctor(double alpha) : alpha_val(alpha) {}
+    
+    __device__ double operator()(double x) const {
+        double val = alpha_val * x;
+        return val * val;
+    }
+};
+
+#define CUDA_CHECK(call) {
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
         fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, \
@@ -716,13 +728,10 @@ double PoissonSolverMPICUDA::compute_diff_norm_sq_thrust(const double* p_dev, co
     // Используем transform_reduce для вычисления суммы (alpha*p[i])^2
     thrust::device_ptr<const double> d_p(p_dev);
     
-    // Функтор для вычисления (alpha*x)^2
-    auto sq_scaled = [alpha_val] __device__ (double x) { 
-        double val = alpha_val * x; 
-        return val * val; 
-    };
+    // Остаток: используя функтор, определённый вне класса
+    ScaledSquareFunctor functor(alpha_val);
     
-    double sum_sq = thrust::transform_reduce(d_p, d_p + n, sq_scaled, 0.0, thrust::plus<double>());
+    double sum_sq = thrust::transform_reduce(d_p, d_p + n, functor, 0.0, thrust::plus<double>());
     
     return sum_sq;
 }
