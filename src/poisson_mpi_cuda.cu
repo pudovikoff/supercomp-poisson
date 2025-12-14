@@ -21,7 +21,7 @@ struct ScaledSquareFunctor {
     }
 };
 
-#define CUDA_CHECK(call) {
+#define CUDA_CHECK(call) { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
         fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, \
