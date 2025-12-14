@@ -6,6 +6,7 @@
 #include <thrust/device_ptr.h>
 #include <thrust/inner_product.h>
 #include <thrust/transform_reduce.h>
+#include <thrust/reduce.h>
 #include <thrust/functional.h>
 #include "poisson_solver_mpi_cuda.h"
 
@@ -847,9 +848,12 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
                                                        reduction_buffer_dev, n_interior, 
                                                        num_reduction_blocks, reduction_threads_per_block, 0);
-            // Редукция на GPU
+            // Редукция на GPU (используем Thrust)
             int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
-            launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
+            thrust::device_ptr<double> d_reduction_buffer_single(reduction_buffer_dev);
+            double diff_sum_local = thrust::reduce(d_reduction_buffer_single, d_reduction_buffer_single + num_elems_diff, 0.0, thrust::plus<double>());
+            // Сохраняем результат редукции обратно в reduction_buffer_dev[0] для launch_check_convergence
+            CUDA_CHECK(cudaMemcpy(reduction_buffer_dev, &diff_sum_local, sizeof(double), cudaMemcpyHostToDevice));
             // Проверка сходимости
             launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
             CUDA_CHECK(cudaDeviceSynchronize());
@@ -1005,22 +1009,16 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
         launch_update_w_and_compute_diff(w_interior_dev, p_dev, alpha, reduction_buffer_dev,
                                          n_interior, num_reduction_blocks, reduction_threads_per_block, 0);
         
-        // 5. Финальная редукция на GPU для проверки сходимости
+        // 5. Финальная редукция на GPU для проверки сходимости (используем Thrust)
         int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
         double t_op5 = MPI_Wtime();
-        launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        
+        thrust::device_ptr<double> d_reduction_buffer(reduction_buffer_dev);
+        double diff_sq_local = thrust::reduce(d_reduction_buffer, d_reduction_buffer + num_elems_diff, 0.0, thrust::plus<double>());
+        
         double t_op5_end = MPI_Wtime();
         time_reduce_convergence += (t_op5_end - t_op5);
         time_vector_ops += (t_op5_end - t_op5);
-        
-        // Копируем результат для проверки сходимости
-        t0 = MPI_Wtime();
-        CUDA_CHECK(cudaMemcpy(reduction_buffer_host, reduction_buffer_dev,
-                             sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaDeviceSynchronize());
-        time_gpu_to_cpu += MPI_Wtime() - t0;
-        double diff_sq_local = reduction_buffer_host[0];
         
         double diff_sq = 0.0;
         t0 = MPI_Wtime();
