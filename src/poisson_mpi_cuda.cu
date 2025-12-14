@@ -5,6 +5,8 @@
 #include <cmath>
 #include <thrust/device_ptr.h>
 #include <thrust/inner_product.h>
+#include <thrust/transform_reduce.h>
+#include <thrust/functional.h>
 #include "poisson_solver_mpi_cuda.h"
 
 #define CUDA_CHECK(call) { \
@@ -673,11 +675,8 @@ double PoissonSolverMPICUDA::dot_product_gpu(const double* vec1_dev, const doubl
     
     double result = thrust::inner_product(d_vec1, d_vec1 + n, d_vec2, 0.0);
     
-    // Копируем результат на CPU для учёта времени
-    double t0 = MPI_Wtime();
-    // Результат уже на CPU после thrust::inner_product, но сохраняем в буфер для совместимости
+    // Результат уже на CPU после thrust::inner_product, сохраняем в буфер для совместимости
     reduction_buffer_host[0] = result;
-    time_gpu_to_cpu += MPI_Wtime() - t0;
     
     return result * h1 * h2;
 }
@@ -705,6 +704,27 @@ double PoissonSolverMPICUDA::copy_result_from_gpu(const double* result_dev) {
                          sizeof(double), cudaMemcpyDeviceToHost));
     time_gpu_to_cpu += MPI_Wtime() - t0;
     return reduction_buffer_host[0] * h1 * h2;
+}
+
+// Функция для вычисления ||alpha*p||^2 с использованием Thrust
+// Возвращает сумму квадратов всех элементов (alpha*p)_i
+double PoissonSolverMPICUDA::compute_diff_norm_sq_thrust(const double* p_dev, const double* alpha_dev, int n) {
+    // Получаем значение alpha с GPU
+    double alpha_val;
+    CUDA_CHECK(cudaMemcpy(&alpha_val, alpha_dev, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    // Используем transform_reduce для вычисления суммы (alpha*p[i])^2
+    thrust::device_ptr<const double> d_p(p_dev);
+    
+    // Функтор для вычисления (alpha*x)^2
+    auto sq_scaled = [alpha_val] __device__ (double x) { 
+        double val = alpha_val * x; 
+        return val * val; 
+    };
+    
+    double sum_sq = thrust::transform_reduce(d_p, d_p + n, sq_scaled, 0.0, thrust::plus<double>());
+    
+    return sum_sq;
 }
 
 double PoissonSolverMPICUDA::max_norm_cpu(const double* vec, int n) {
@@ -805,6 +825,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             // 2. Вычисление alpha = (z,r) / (Ap,p) на GPU (dot Ap,p)
             double t_op2 = MPI_Wtime();
             double* denom_dev = dot_product_gpu_ptr(Ap_dev, p_dev, n_interior);
+            CUDA_CHECK(cudaDeviceSynchronize());
             launch_compute_alpha(rz_prev_dev, denom_dev, alpha_dev, 0);
             CUDA_CHECK(cudaDeviceSynchronize());
             double t_op2_end = MPI_Wtime();
@@ -812,28 +833,25 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             time_vector_ops += (t_op2_end - t_op2);
  
             
-            // 3. Обновление w и проверка сходимости (reduce convergence)
+            // 3. Обновление w и проверка сходимости (Thrust-базированная)
             double t_op3 = MPI_Wtime();
-            launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
-                                                       reduction_buffer_dev, n_interior, 
-                                                       num_reduction_blocks, reduction_threads_per_block, 0);
-            // Редукция на GPU
-            int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
-            launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
-            // Проверка сходимости
-            launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
+            // Обновление w
+            launch_axpy_dev_scalar(w_interior_dev, p_dev, alpha_dev, 1.0, n_interior, 0);
+            // Вычисление ||alpha*p||^2 с Thrust
+            double diff_sq_local = compute_diff_norm_sq_thrust(p_dev, alpha_dev, n_interior);
             CUDA_CHECK(cudaDeviceSynchronize());
+            
+            // Проверка сходимости
+            double diff_norm = sqrt(diff_sq_local * h1 * h2);
             double t_op3_end = MPI_Wtime();
             time_reduce_convergence += (t_op3_end - t_op3);
             time_vector_ops += (t_op3_end - t_op3);
- 
             
-            // CUDA_CHECK(cudaDeviceSynchronize()); // Необходима для чтения флага
-            
-            // Копируем флаг сходимости (1 байт) - блокирующее копирование
-            double t0_conv = MPI_Wtime();
-            CUDA_CHECK(cudaMemcpy(&converged_host, converged_dev, sizeof(bool), cudaMemcpyDeviceToHost));
-            time_gpu_to_cpu += MPI_Wtime() - t0_conv;
+            if (diff_norm < delta) {
+                converged_host = true;
+            } else {
+                converged_host = false;
+            }
             
             if (converged_host) {
                 iters = k + 1;
@@ -842,9 +860,9 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
                 launch_copy_interior_from_device(w_dev, w_interior_dev, nx, ny, 0);
                 CUDA_CHECK(cudaDeviceSynchronize());
                 
-                t0_conv = MPI_Wtime();
+                double t0_final = MPI_Wtime();
                 CUDA_CHECK(cudaMemcpy(w.data.data(), w_dev, (nx+2)*(ny+2)*sizeof(double), cudaMemcpyDeviceToHost));
-                time_gpu_to_cpu += MPI_Wtime() - t0_conv;
+                time_gpu_to_cpu += MPI_Wtime() - t0_final;
                 return;
             }
             
@@ -867,6 +885,7 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             // 5. Dot product (z,r) для вычисления beta
             double t_op5 = MPI_Wtime();
             double* rz_new_dev = dot_product_gpu_ptr(z_dev, r_dev, n_interior);
+            CUDA_CHECK(cudaDeviceSynchronize());
             // beta = rz_new / rz_old
             launch_compute_beta(rz_new_dev, rz_prev_dev, beta_dev, 0);
             CUDA_CHECK(cudaDeviceSynchronize());

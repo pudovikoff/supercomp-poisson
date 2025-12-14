@@ -206,6 +206,9 @@ private:
     
     // Копирование дного элемента с GPU для редукции и проверки
     double copy_result_from_gpu(const double* result_dev);
+    
+    // Оптимизированные операции редукции с Thrust
+    double compute_diff_norm_sq_thrust(const double* p_dev, const double* alpha_dev, int n);
 };
 
 // Объявления CUDA ядер (определены в .cu файле)
