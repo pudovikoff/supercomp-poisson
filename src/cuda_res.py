@@ -26,8 +26,8 @@ DATA = {
         70.43,       # OpenMP 16×8
         45.816858,   # MPI 20
         65.774599,   # MPI 10×16
-        23.96,   # 1 GPU
-        18.35    # 2 GPU
+        9.18,   # 1 GPU
+        6.27    # 2 GPU
     ],
     'colors': [
         '#808080',   # Gray for sequential
@@ -93,7 +93,7 @@ def plot_speedup_efficiency():
     ax.set_xticks(x)
     ax.set_xticklabels(implementations, fontsize=10)
     ax.grid(True, alpha=0.3, axis='y', which='both')
-    ax.set_ylim(10, 3000)
+    ax.set_ylim(5, 3000)
     
     # Add value labels for execution time
     for i, t in enumerate(times):
