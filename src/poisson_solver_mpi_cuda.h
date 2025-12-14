@@ -141,6 +141,16 @@ public:
     double time_mpi_exchange;     // MPI обмен границ
     double time_mpi_allreduce;    // MPI allreduce
     
+    // Детальные таймеры для операций внутри time_vector_ops
+    double time_copy_p_to_w;      // 1. copy p->w
+    double time_extract_boundaries; // 2. extract boundaries
+    double time_inject_boundaries;  // 3. inject boundaries
+    double time_dot_product_Ap_p;  // 4. dot(Ap, p)
+    double time_reduce_convergence; // 5. reduce (convergence check)
+    double time_axpy;              // 6. AXPY: r -= alpha*Ap
+    double time_dot_product_z_r;   // 7. dot(z, r)
+    double time_vector_update;     // 8. update p = z + beta*p
+    
     // GPU устройство
     int num_devices;
     int device_id;
