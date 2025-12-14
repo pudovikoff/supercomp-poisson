@@ -842,25 +842,25 @@ void PoissonSolverMPICUDA::solve_CG_GPU(Grid2D& w, double delta, int max_iter,
             time_vector_ops += (t_op2_end - t_op2);
  
             
-            // 3. Обновление w и проверка сходимости (Thrust-базированная)
+            // 3. Обновление w и проверка сходимости (оптимизированная)
             double t_op3 = MPI_Wtime();
-            // Обновление w
-            launch_axpy_dev_scalar(w_interior_dev, p_dev, alpha_dev, 1.0, n_interior, 0);
-            // Вычисление ||alpha*p||^2 с Thrust
-            double diff_sq_local = compute_diff_norm_sq_thrust(p_dev, alpha_dev, n_interior);
-            CUDA_CHECK(cudaDeviceSynchronize());
-            
+            launch_update_w_and_compute_diff_dev_scalar(w_interior_dev, p_dev, alpha_dev, 
+                                                       reduction_buffer_dev, n_interior, 
+                                                       num_reduction_blocks, reduction_threads_per_block, 0);
+            // Редукция на GPU
+            int num_elems_diff = num_reduction_blocks * reduction_threads_per_block;
+            launch_reduce_blocks(reduction_buffer_dev, reduction_buffer_dev, num_elems_diff, 0);
             // Проверка сходимости
-            double diff_norm = sqrt(diff_sq_local * h1 * h2);
+            launch_check_convergence(reduction_buffer_dev, converged_dev, delta, h1, h2, 0);
+            CUDA_CHECK(cudaDeviceSynchronize());
             double t_op3_end = MPI_Wtime();
             time_reduce_convergence += (t_op3_end - t_op3);
             time_vector_ops += (t_op3_end - t_op3);
             
-            if (diff_norm < delta) {
-                converged_host = true;
-            } else {
-                converged_host = false;
-            }
+            // Копируем флаг сходимости
+            double t0_conv = MPI_Wtime();
+            CUDA_CHECK(cudaMemcpy(&converged_host, converged_dev, sizeof(bool), cudaMemcpyDeviceToHost));
+            time_gpu_to_cpu += MPI_Wtime() - t0_conv;
             
             if (converged_host) {
                 iters = k + 1;
